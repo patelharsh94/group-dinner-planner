@@ -1,0 +1,39 @@
+{
+  "name": "group-dinner-planner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --exclude 'tests/persistence/**' --exclude 'tests/live/**'",
+    "test:db": "vitest run tests/persistence",
+    "test:live": "tsx scripts/live-check.ts",
+    "eval:muse": "tsx scripts/evaluate-muse.ts",
+    "db:migrate": "tsx src/persistence/migrate.ts",
+    "telegram:register": "tsx scripts/register-webhook.ts",
+    "test:db:embedded": "tsx scripts/test-postgres.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.6.1",
+    "grammy": "^1.38.3",
+    "luxon": "^3.7.2",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.7.1",
+    "@types/node": "^22.18.0",
+    "@types/pg": "^8.15.5",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}
