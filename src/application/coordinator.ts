@@ -1,3 +1,4 @@
+import { researchGuidance, type ResearchCode } from "./research.js";
 import { researchVersion } from "./research-version.js";
 import type { TelegramButton } from "../adapters/telegram.js";
 import { randomBytes } from "node:crypto";
@@ -58,7 +59,7 @@ const emptySession = (): Session => ({
   pendingOnboard: null,
 });
 const privacy =
-  "I am Muse, the dinner planning assistant. I process your private dinner input with Meta Muse to coordinate this dinner. Attendees, venue, time, duration, estimated cost and reservation handoff are shared with approved attendees. Private conversations, constraints and Google busy intervals stay private. All approved attendees are required by default. /stop withdraws consent; /delete erases your data. Retention: seven days after dinner. Reminders are optional. /privacy /support";
+  "I am Muse, the dinner planning assistant. I process your private dinner input with Meta Muse to coordinate this dinner. Attendees, venue, time, duration, estimated cost and reservation handoff are shared with approved attendees. Private conversations and Google busy intervals stay private. Form answers stay private unless you explicitly share them with approved dinner members, including budget and travel starting point. All approved attendees are required by default. /stop withdraws consent; /delete erases your data. Retention: seven days after dinner. Reminders are optional. /privacy /support";
 type Buttons = TelegramButton[][];
 type SetupDraft = {
   step: number;
@@ -799,6 +800,7 @@ export class Coordinator {
           "DIETARY",
           "Use /remove_diet EXACT_REQUIREMENT only to explicitly withdraw your own requirement.",
         );
+      if (s.answerSharing) delete s.answerSharing[user];
       s.dinner = removeDietary(d, user, requirement, now);
       const next = await this.save(tx, record, s);
       await dinnerReply(
@@ -809,6 +811,7 @@ export class Coordinator {
     }
     if (command === "/remove_limit") {
       const kind = z.enum(["budget", "travel"]).parse(args[0]);
+      if (s.answerSharing) delete s.answerSharing[user];
       s.dinner = removeFirmLimit(d, user, kind, now);
       const next = await this.save(tx, record, s);
       await dinnerReply(
@@ -1205,6 +1208,7 @@ export class Coordinator {
   ): Promise<void> {
     const s = structuredClone(record.state),
       old = s.dinner.activeVersion;
+    if (s.answerSharing) delete s.answerSharing[user];
     s.dinner = updateConstraints(s.dinner, user, patch, this.now());
     const complete =
       s.dinner.members.length === s.roster.length &&
@@ -1247,8 +1251,16 @@ export class Coordinator {
     revision: number,
     extra: Record<string, unknown> = {},
   ): Promise<void> {
+    const workId = id();
+    if (kind === "research")
+      await tx.createResearchAttempt({
+        id: workId,
+        dinnerId,
+        inputVersion: String(extra.researchVersion ?? revision),
+        requestedAt: this.now(),
+      });
     await tx.queue({
-      id: id(),
+      id: workId,
       dedupeKey: `${eventId}:${kind}:${dinnerId}:${userId}`,
       kind,
       subjectUserId: userId,
@@ -1270,23 +1282,11 @@ export class Coordinator {
     )
       return;
     if (!candidateSlots(s.dinner, this.now()).length) {
-      await this.message(
-        tx,
-        eventId,
-        s.dinner.organizerId,
-        "Planning blocker: no common explicitly willing time is available, or input is incomplete. Ask attendees to update availability. Requirements were preserved.",
-        { dinnerId: record.id },
-      );
+      await this.blockedResearch(tx, record, eventId, "NO_COMMON_TIME");
       return;
     }
     if (!this.config.MODEL_API_KEY) {
-      await this.message(
-        tx,
-        eventId,
-        s.dinner.organizerId,
-        "Research blocker: live Muse access is unavailable. Manual availability remains usable; venue feasibility has not been established.",
-        { dinnerId: record.id },
-      );
+      await this.blockedResearch(tx, record, eventId, "SERVICE_UNCONFIGURED");
       return;
     }
     if (
@@ -1297,15 +1297,13 @@ export class Coordinator {
         this.config.MAX_RESEARCH_PER_DINNER_PER_DAY,
       ))
     ) {
-      await this.message(
-        tx,
-        eventId,
-        s.dinner.organizerId,
-        "Research daily limit reached. Current uncertainty remains unresolved.",
-        { dinnerId: record.id },
-      );
+      await this.blockedResearch(tx, record, eventId, "USAGE_LIMIT");
       return;
     }
+    await tx.client.query(
+      "UPDATE research_runs SET attempt=attempt || jsonb_build_object('status','superseded','stage','done','finishedAt',$2::text,'updatedAt',$2::text) WHERE dinner_id=$1 AND id IN (SELECT id FROM outbox WHERE dinner_id=$1 AND kind='research' AND status='pending') AND attempt->>'status'='queued'",
+      [record.id, this.now()],
+    );
     // Pending work is durable but only the most recent complete inputs need a search.
     await tx.client.query(
       "UPDATE outbox SET status='suppressed',payload='{}'::jsonb,completed_at=now() WHERE kind='research' AND dinner_id=$1 AND status='pending'",
@@ -1319,6 +1317,39 @@ export class Coordinator {
       s.dinner.organizerId,
       record.revision,
       { researchVersion: researchVersion(s) },
+    );
+  }
+  private async blockedResearch(
+    tx: DinnerTx,
+    record: DinnerRecord<AppDinner>,
+    eventId: string,
+    code: ResearchCode,
+  ): Promise<void> {
+    const attemptId = id(),
+      now = this.now();
+    await tx.createResearchAttempt({
+      id: attemptId,
+      dinnerId: record.id,
+      inputVersion: researchVersion(record.state),
+      requestedAt: now,
+    });
+    await tx.updateResearchAttempt(attemptId, {
+      status: code === "NO_COMMON_TIME" ? "needs_checks" : "failed",
+      stage: code === "NO_COMMON_TIME" ? "planning" : "provider",
+      code,
+      finishedAt: now,
+      updatedAt: now,
+      durationMs: 0,
+    });
+    await this.message(
+      tx,
+      eventId,
+      record.organizerId,
+      `${researchGuidance(code)} Reference: ${attemptId}`,
+      {
+        dinnerId: record.id,
+        buttons: this.plannerButtons({ dinner: record.id }),
+      },
     );
   }
   async announce(tx: DinnerTx, s: AppDinner, eventId: string): Promise<void> {
@@ -1419,6 +1450,7 @@ export class Coordinator {
         await tx.deleteDinner(record.id);
         continue;
       }
+      if (s.answerSharing) delete s.answerSharing[user];
       if (s.consents[user]) s.consents[user].active = false;
       // Unapproved answers must not remain eligible for later approval after opt-out.
       delete s.joinRequests[user];

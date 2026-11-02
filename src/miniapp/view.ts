@@ -1,3 +1,4 @@
+import { researchMessage } from "../application/research.js";
 import { stableHash } from "./hash.js";
 import { evaluateFeasibility, type Constraints } from "../domain/index.js";
 import {
@@ -37,6 +38,7 @@ export function formVersion(s: AppDinner, user: string): string {
     own: s.joinRequests[user]?.preferences ?? s.dinner.constraints[user] ?? {},
     membership: s.dinner.members.find((m) => m.id === user) ?? null,
     consent: s.consents[user]?.active ?? false,
+    answerSharing: s.answerSharing?.[user],
   });
 }
 export function summary(
@@ -117,6 +119,7 @@ export async function project(
   const proposal = d.proposals.find((p) => p.version === d.activeVersion),
     stored = await tx.getCalendarConnection(record.id, user);
   const full = isMember;
+  const research = full ? await tx.getLatestResearchAttempt(record.id) : null;
   const work = await tx.client.query(
     "SELECT EXISTS(SELECT 1 FROM outbox WHERE dinner_id=$1 AND kind='research' AND status IN ('pending','sending')) AS pending",
     [record.id],
@@ -125,6 +128,18 @@ export async function project(
     ...summary(record, user),
     formVersion: formVersion(s, user),
     researchPending: full && work.rows[0].pending,
+    ...(research
+      ? {
+          research: {
+            id: research.id,
+            status: research.status,
+            requestedAt: research.requestedAt,
+            updatedAt: research.updatedAt,
+            message: researchMessage(research),
+          },
+          ...(organizer(s, user) ? { researchDetails: research } : {}),
+        }
+      : {}),
     setup: structuredClone(publicSetup(s)),
     sharedPlan:
       d.status === "cancelled"
@@ -143,7 +158,39 @@ export async function project(
             d.activeVersion !== null,
         }))
       : [],
+    sharedResponses: full
+      ? d.members
+          .filter((m) => authorized(s, m.id))
+          .map((m) => {
+            const input = d.constraints[m.id],
+              submitted =
+                !!input?.availability?.length && input.dietary !== undefined,
+              enabled = s.answerSharing?.[m.id]?.enabled === true;
+            const shared: Constraints = {};
+            if (submitted && enabled)
+              for (const key of [
+                "availability",
+                "dietary",
+                "preferences",
+                "budget",
+                "travel",
+              ] as const)
+                if (input[key] !== undefined)
+                  Object.assign(shared, { [key]: structuredClone(input[key]) });
+            return {
+              userId: m.id,
+              name: s.roster.find((r) => r.id === m.id)?.name ?? "Attendee",
+              status: !submitted
+                ? "not-submitted"
+                : enabled
+                  ? "shared"
+                  : "private",
+              ...(submitted && enabled ? { constraints: shared } : {}),
+            };
+          })
+      : [],
     own: {
+      answerSharing: s.answerSharing?.[user]?.enabled === true,
       constraints,
       reminders: d.members.find((m) => m.id === user)?.remindersOptIn ?? false,
       consent: s.consents[user]?.active ?? false,

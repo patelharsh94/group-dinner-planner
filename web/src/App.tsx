@@ -7,6 +7,7 @@ import type {
 } from "../../src/miniapp/contracts";
 import { ApiError, friendlyError, MiniAppApi } from "./api";
 import { Brand, Button, Field, Icon, Notice, Sheet } from "./components";
+import { AnswersPreview, type ManualAnswers } from "./AnswersPreview";
 import { CreateDinner } from "./CreateDinner";
 import { Dashboard } from "./Dashboard";
 import { PreferencesForm, type ResponseContext } from "./PreferencesForm";
@@ -18,6 +19,7 @@ interface ResponseDraft {
   context: ResponseContext;
   initial?: DinnerView["own"]["constraints"];
   foodConfirmed?: boolean;
+  answerSharing?: boolean;
   formVersion?: string;
   dinnerId: string;
   invite?: string;
@@ -120,6 +122,13 @@ export function App() {
     [loading, setLoading] = useState(true);
   const [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  const [sharingPreview, setSharingPreview] = useState<{
+    answers: ManualAnswers;
+    formVersion: string;
+    timezone: string;
+    currency: string;
+  }>();
+  const [sharingConfirmed, setSharingConfirmed] = useState(false);
   const [settings, setSettings] = useState(false),
     [danger, setDanger] = useState<"stop" | "delete" | "cancelDinner" | null>(
       null,
@@ -127,8 +136,18 @@ export function App() {
   const epoch = useRef(0),
     activeDinner = useRef<string | undefined>(undefined);
   const invite = useRef(invitationToken()).current;
+  const previousDinnerStatus = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (dinner?.status !== "cancelled") return;
+    const previous = previousDinnerStatus.current;
+    previousDinnerStatus.current = dinner?.status;
+    // Only an active-to-cancelled transition interrupts an editor. Loading an
+    // already cancelled dinner must leave its privacy settings available.
+    if (
+      dinner?.status !== "cancelled" ||
+      previous === undefined ||
+      previous === "cancelled"
+    )
+      return;
     setScreen("dashboard");
     setResponse(undefined);
     setSharedDraft(undefined);
@@ -207,6 +226,7 @@ export function App() {
       context: { ...view.setup },
       initial: view.own.constraints,
       foodConfirmed: view.own.foodConfirmed,
+      answerSharing: view.own.answerSharing,
       formVersion: view.formVersion,
       dinnerId: view.id,
     });
@@ -284,6 +304,10 @@ export function App() {
         setSettings(false);
         setDanger(null);
         setBootstrap(undefined);
+        setResponse(undefined);
+        setSharedDraft(undefined);
+        setSharingPreview(undefined);
+        setSharingConfirmed(false);
         setDeleted(true);
       } else if (input.action === "stop") {
         setSettings(false);
@@ -445,6 +469,7 @@ export function App() {
         context={response.context}
         initial={response.initial}
         foodConfirmed={response.foodConfirmed}
+        answerSharing={response.answerSharing}
         needsConsent={!!response.invite}
         busy={busy}
         error={error}
@@ -479,6 +504,8 @@ export function App() {
             onClose={() => {
               setSettings(false);
               setDanger(null);
+              setSharingPreview(undefined);
+              setSharingConfirmed(false);
             }}
           >
             <div className="form-stack">
@@ -486,7 +513,64 @@ export function App() {
                 {dinner.city} · {dateLabel(dinner.windowStart)}–
                 {dateLabel(dinner.windowEnd)}
               </p>
-              {danger ? (
+              {sharingPreview ? (
+                <section
+                  className="form-stack"
+                  aria-label="Confirm answer sharing"
+                >
+                  <h2>Share these answers?</h2>
+                  <p className="muted small">
+                    Approved members of this dinner will see all the answers
+                    below, including your travel starting point. Calendar busy
+                    times and private chats are excluded.
+                  </p>
+                  <AnswersPreview
+                    answers={sharingPreview.answers}
+                    timezone={sharingPreview.timezone}
+                    currency={sharingPreview.currency}
+                  />
+                  <label className="check-label">
+                    <input
+                      type="checkbox"
+                      checked={sharingConfirmed}
+                      onChange={(event) =>
+                        setSharingConfirmed(event.target.checked)
+                      }
+                    />
+                    <span>
+                      I want approved members to see exactly these answers.
+                    </span>
+                  </label>
+                  <Button
+                    busy={busy}
+                    disabled={!sharingConfirmed}
+                    onClick={async () => {
+                      if (
+                        await mutate({
+                          action: "setAnswerSharing",
+                          dinnerId: dinner.id,
+                          formVersion: sharingPreview.formVersion,
+                          payload: { enabled: true },
+                        })
+                      ) {
+                        setSharingPreview(undefined);
+                        setSharingConfirmed(false);
+                      }
+                    }}
+                  >
+                    Share my answers
+                  </Button>
+                  <Button
+                    variant="quiet"
+                    onClick={() => {
+                      setSharingPreview(undefined);
+                      setSharingConfirmed(false);
+                    }}
+                  >
+                    Keep answers private
+                  </Button>
+                </section>
+              ) : danger ? (
                 <>
                   <Notice kind={danger === "delete" ? "error" : "info"}>
                     {danger === "delete"
@@ -663,6 +747,76 @@ export function App() {
                         )}
                     </>
                   )}
+                  <section
+                    className="settings-section"
+                    aria-label="Answer sharing settings"
+                  >
+                    <h3>Your answer sharing</h3>
+                    <p className="muted small">
+                      {dinner.own.answerSharing
+                        ? "Your manual form answers are shared with approved dinner members."
+                        : "Your answers are private. Only the shared dinner plan and progress are visible to others."}
+                    </p>
+                    {dinner.own.answerSharing ? (
+                      <>
+                        <Button
+                          variant="secondary"
+                          busy={busy}
+                          onClick={() =>
+                            void mutate({
+                              action: "setAnswerSharing",
+                              dinnerId: dinner.id,
+                              payload: { enabled: false },
+                            })
+                          }
+                        >
+                          Make my answers private
+                        </Button>
+                        <p className="field-hint">
+                          This stops future sharing. It cannot remove copies
+                          already seen.
+                        </p>
+                      </>
+                    ) : (dinner.role === "organizer" ||
+                        dinner.role === "member") &&
+                      dinner.own.consent &&
+                      !dinner.ended &&
+                      dinner.status !== "cancelled" ? (
+                      <>
+                        <Button
+                          variant="secondary"
+                          disabled={
+                            !dinner.own.foodConfirmed ||
+                            !dinner.own.constraints.availability?.length
+                          }
+                          onClick={() => {
+                            setSharingPreview({
+                              answers: structuredClone(dinner.own.constraints),
+                              formVersion: dinner.formVersion,
+                              timezone: dinner.setup.timezone,
+                              currency: dinner.setup.currency,
+                            });
+                            setSharingConfirmed(false);
+                            setError("");
+                          }}
+                        >
+                          Review &amp; share my answers
+                        </Button>
+                        {(!dinner.own.foodConfirmed ||
+                          !dinner.own.constraints.availability?.length) && (
+                          <p className="field-hint">
+                            Save your own answers before choosing to share them.
+                          </p>
+                        )}
+                      </>
+                    ) : null}
+                    <p className="field-hint">
+                      Calendar busy times, private chats and staff conversations
+                      are never shared. Sharing can be turned off even after
+                      this dinner ends.
+                    </p>
+                  </section>
+                  <div className="divider" />
                   <Button variant="danger" onClick={() => setDanger("delete")}>
                     Delete all my Muse data
                   </Button>

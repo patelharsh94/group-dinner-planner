@@ -1,4 +1,8 @@
 import type { Pool, PoolClient } from "pg";
+import {
+  ResearchAttemptSchema,
+  type ResearchAttempt,
+} from "../application/research.js";
 
 export interface DinnerRecord<S = unknown> {
   id: string;
@@ -98,7 +102,14 @@ export class DinnerTx {
     );
     return result.rowCount === 1;
   }
-  async cancelDinnerWork(id: string): Promise<void> {
+  async cancelDinnerWork(
+    id: string,
+    at = new Date().toISOString(),
+  ): Promise<void> {
+    await this.client.query(
+      "UPDATE research_runs SET attempt=attempt || jsonb_build_object('status','cancelled','stage','done','finishedAt',$2::text,'updatedAt',$2::text) WHERE dinner_id=$1 AND attempt->>'status' IN ('queued','running')",
+      [id, at],
+    );
     await this.client.query(
       "UPDATE user_sessions SET pending_onboard=NULL,updated_at=now() WHERE pending_onboard->>'dinnerId'=$1",
       [id],
@@ -171,6 +182,86 @@ export class DinnerTx {
       "INSERT INTO proposal_versions(dinner_id,version,snapshot) VALUES ($1,$2,$3)",
       [dinnerId, version, JSON.stringify(snapshot)],
     );
+  }
+  async reconcileResearchRuns(at = new Date().toISOString()): Promise<void> {
+    await this.client.query(
+      "UPDATE research_runs r SET attempt=r.attempt || jsonb_build_object('status',CASE WHEN o.status IN ('failed','sent') THEN 'failed' ELSE 'superseded' END,'stage','done','updatedAt',$1::text,'finishedAt',$1::text) || CASE WHEN o.status IN ('failed','sent') THEN jsonb_build_object('code','UNEXPECTED_ERROR') ELSE '{}'::jsonb END FROM outbox o WHERE o.id=r.id AND o.kind='research' AND o.status NOT IN ('pending','sending') AND r.attempt->>'status' IN ('queued','running')",
+      [at],
+    );
+  }
+  async createResearchAttempt(
+    input: Pick<
+      ResearchAttempt,
+      "id" | "dinnerId" | "inputVersion" | "requestedAt"
+    >,
+  ): Promise<ResearchAttempt> {
+    const attempt = ResearchAttemptSchema.parse({
+      ...input,
+      status: "queued",
+      stage: "queued",
+      updatedAt: input.requestedAt,
+    });
+    await this.client.query(
+      "INSERT INTO research_runs(id,dinner_id,input_version,requested_at,attempt) VALUES ($1,$2,$3,$4,$5)",
+      [
+        attempt.id,
+        attempt.dinnerId,
+        attempt.inputVersion,
+        attempt.requestedAt,
+        JSON.stringify(attempt),
+      ],
+    );
+    return attempt;
+  }
+  async getResearchAttempt(id: string): Promise<ResearchAttempt | null> {
+    const result = await this.client.query(
+      "SELECT attempt FROM research_runs WHERE id=$1 FOR UPDATE",
+      [id],
+    );
+    return result.rows[0]
+      ? ResearchAttemptSchema.parse(result.rows[0].attempt)
+      : null;
+  }
+  async getLatestResearchAttempt(
+    dinnerId: string,
+  ): Promise<ResearchAttempt | null> {
+    const result = await this.client.query(
+      "SELECT attempt FROM research_runs WHERE dinner_id=$1 ORDER BY requested_at DESC,sequence DESC LIMIT 1",
+      [dinnerId],
+    );
+    return result.rows[0]
+      ? ResearchAttemptSchema.parse(result.rows[0].attempt)
+      : null;
+  }
+  async updateResearchAttempt(
+    id: string,
+    patch: Partial<
+      Omit<ResearchAttempt, "id" | "dinnerId" | "inputVersion" | "requestedAt">
+    >,
+  ): Promise<ResearchAttempt | null> {
+    const validated = ResearchAttemptSchema.omit({
+        id: true,
+        dinnerId: true,
+        inputVersion: true,
+        requestedAt: true,
+      })
+        .partial()
+        .strict()
+        .parse(patch),
+      current = await this.getResearchAttempt(id);
+    if (!current) return null;
+    if (current.status === "cancelled" || current.status === "superseded")
+      return current;
+    const attempt = ResearchAttemptSchema.parse({
+      ...current,
+      ...validated,
+      updatedAt: validated.updatedAt ?? new Date().toISOString(),
+    });
+    await this.client.query("UPDATE research_runs SET attempt=$2 WHERE id=$1", [
+      id,
+      JSON.stringify(attempt),
+    ]);
+    return attempt;
   }
   async getMiniAppReceipt(
     userId: string,
@@ -354,6 +445,7 @@ export class DinnerTx {
       "UPDATE outbox SET payload='{}'::jsonb,dedupe_key=CASE WHEN subject_user_id=$1 THEN 'erased:'||id ELSE dedupe_key END,subject_user_id=CASE WHEN subject_user_id=$1 THEN NULL ELSE subject_user_id END,status=CASE WHEN status='sending' THEN 'ambiguous' WHEN status='pending' THEN 'suppressed' ELSE status END,completed_at=now() WHERE subject_user_id=$1 OR (payload->'relatedUserIds') ? $1",
       [userId],
     );
+    await this.reconcileResearchRuns();
   }
 }
 
@@ -517,13 +609,17 @@ export class PgStore {
     );
   }
   async recoverLeases(): Promise<void> {
-    await this.pool.query(
-      "UPDATE inbox SET payload=CASE WHEN attempts>=5 THEN '{}'::jsonb ELSE payload END,status=CASE WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,completed_at=CASE WHEN attempts>=5 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL WHERE status='processing' AND lease_until<now()",
-    );
-    await this.pool.query(
-      "UPDATE outbox SET payload=CASE WHEN kind='message' OR attempts>=5 THEN '{}'::jsonb ELSE payload END,status=CASE WHEN kind='message' THEN 'ambiguous' WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,completed_at=CASE WHEN kind='message' OR attempts>=5 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL WHERE status='sending' AND lease_until<now()",
-    );
+    await this.transaction(async (tx) => {
+      await tx.client.query(
+        "UPDATE inbox SET payload=CASE WHEN attempts>=5 THEN '{}'::jsonb ELSE payload END,status=CASE WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,completed_at=CASE WHEN attempts>=5 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL WHERE status='processing' AND lease_until<now()",
+      );
+      await tx.client.query(
+        "UPDATE outbox SET payload=CASE WHEN kind='message' OR attempts>=5 THEN '{}'::jsonb ELSE payload END,status=CASE WHEN kind='message' THEN 'ambiguous' WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,completed_at=CASE WHEN kind='message' OR attempts>=5 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL WHERE status='sending' AND lease_until<now()",
+      );
+      await tx.reconcileResearchRuns();
+    });
   }
+
   async purgeExpired(): Promise<void> {
     await this.transaction(async (tx) => {
       const client = tx.client;
@@ -533,6 +629,7 @@ export class PgStore {
       await client.query(
         "UPDATE outbox SET payload='{}'::jsonb,status='suppressed',completed_at=now(),lease_owner=NULL,lease_until=NULL WHERE created_at<now()-interval '7 days' AND status='pending'",
       );
+      await tx.reconcileResearchRuns();
       await client.query(
         "DELETE FROM reminder_limits WHERE last_at<now()-interval '7 days'",
       );

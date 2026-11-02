@@ -10,7 +10,7 @@ Dinner state is a Zod-validated JSONB aggregate with revision CAS inside a Postg
 
 ## ADR-003: least-context model execution
 
-Muse produces typed proposals, never authorizations or confirmations. Extraction contains only the actor's own private constraints and current message. Restaurant research uses anonymous aggregate requirements and plan parameters; it contains no raw conversations, names or calendar events. Output is parsed using Zod. Shared messages use fixed application templates. Research does not auto-fetch arbitrary model URLs, avoiding SSRF; evidence URLs must be public HTTPS and be present in search citations before they can support claims. Source truth and allergy accommodation still require human verification.
+Muse produces typed proposals, never authorizations or confirmations. Extraction contains only the actor's own private constraints and current message. Restaurant research uses anonymous aggregate requirements and plan parameters; it contains no raw conversations, names or calendar events. Output is parsed using Zod. Shared messages use fixed application templates. Research does not auto-fetch arbitrary model URLs, avoiding SSRF; evidence URLs must be public HTTPS and attested by completed provider search results or citation annotations. Only URLs used by structured claims are fetched, with a 16-source cap, public DNS/redirect checks, excerpt matching and claim-specific validation. Provider search provenance alone does not verify a claim. Source truth and allergy accommodation still require human verification.
 
 ## ADR-004: identity-bound optional Google connection
 
@@ -33,3 +33,11 @@ Pending guest responses live in the validated aggregate's private join request u
 ## ADR-008: cancellation ends one dinner without deleting its history
 
 Whole-dinner cancellation is an organizer-authorized terminal transition, distinct from personal opt-out and deletion. A cancelled domain state and the existing database end timestamp commit together, freeing the organizer's active-dinner slot and starting seven-day retention. Queued work, invitation/OAuth links, scoped calendar credentials, staged guest answers and legacy private stages are removed atomically. Immutable proposal history remains; repeated requests neither resend notices nor reset the timestamp. Delivery rechecks consent and allows only typed cancellation notices after cancellation. Provider results and privacy flows cannot restore active planning. Restaurant bookings and previously exported calendar events require manual cleanup.
+
+## ADR-009: participant-controlled answer sharing
+
+Manual form answers remain private unless their author reviews an exact preview and opts in. Approved members receive an explicit projection of availability, food requirements, preferences, personal budget and travel input. Chats, calendar busy data and staff conversations are excluded. Grants bind the author's current form version; omitted sharing input, unseen inherited fields and private chat edits cannot publish new answers. Revocation accepts stale forms and remains available after dinner cancellation or completion. Idempotent receipt replay projects current permissions instead of restoring a revoked grant.
+
+## ADR-010: durable, sanitized research diagnostics
+
+An additive research_runs table records each queued attempt, stages, safe error categories, HTTP status, provider request identifier, timing and aggregate evidence counts. Members see a basic outcome; only the organizer receives diagnostic details and remediation. Provider response bodies, prompts and private answers are never retained in diagnostic records or operational logs. The outbox job identifier doubles as a support reference. Cancellation, supersession, exhausted retries and retention reconcile attempts transactionally. Retries remain explicit.

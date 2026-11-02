@@ -1,3 +1,4 @@
+import type { ResearchAttempt } from "../application/research.js";
 import type { Constraints, DinnerSetup } from "../domain/index.js";
 export type PreferencesInput = Pick<
   Constraints,
@@ -5,6 +6,7 @@ export type PreferencesInput = Pick<
 > & {
   availability: NonNullable<Constraints["availability"]>;
   foodConfirmed: true;
+  shareAnswers?: boolean;
   removeDietary?: string[];
   removeLimits?: ("budget" | "travel")[];
 };
@@ -21,6 +23,7 @@ export interface CreateDinnerInput {
   consent: true;
 }
 export type MiniAppActionName =
+  | "setAnswerSharing"
   | "cancelDinner"
   | "create"
   | "join"
@@ -76,9 +79,24 @@ export interface InvitationView {
   area: string;
   budget: DinnerSetup["budget"];
 }
+export interface SharedResponse {
+  userId: string;
+  name: string;
+  status: "shared" | "private" | "not-submitted";
+  constraints?: Pick<
+    Constraints,
+    "availability" | "dietary" | "preferences" | "budget" | "travel"
+  >;
+}
 export interface DinnerView extends DinnerSummary {
+  sharedResponses: SharedResponse[];
   formVersion: string;
   researchPending: boolean;
+  research?: Pick<
+    ResearchAttempt,
+    "id" | "status" | "requestedAt" | "updatedAt"
+  > & { message: string };
+  researchDetails?: ResearchAttempt;
   setup: Pick<
     DinnerSetup,
     | "city"
@@ -99,6 +117,7 @@ export interface DinnerView extends DinnerSummary {
     confirmed: boolean;
   }[];
   own: {
+    answerSharing: boolean;
     constraints: Constraints;
     reminders: boolean;
     consent: boolean;

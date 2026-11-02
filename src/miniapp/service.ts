@@ -48,6 +48,7 @@ import { stableHash } from "./hash.js";
 import { formVersion, invitation, project, summary } from "./view.js";
 const uid = () => randomBytes(12).toString("hex");
 const actions = [
+  "setAnswerSharing",
   "cancelDinner",
   "create",
   "join",
@@ -112,6 +113,7 @@ export const PreferencesSchema = ConstraintSchema.pick({
     availability: ConstraintSchema.shape.availability.unwrap().min(1),
     dietary: ConstraintSchema.shape.dietary.unwrap().default([]),
     foodConfirmed: z.literal(true),
+    shareAnswers: z.boolean().optional(),
     removeDietary: z.array(z.string().min(1).max(200)).max(32).optional(),
     removeLimits: z
       .array(z.enum(["budget", "travel"]))
@@ -150,6 +152,7 @@ function applyPreferences(
 ): void {
   const {
     foodConfirmed: _,
+    shareAnswers: _sharing,
     removeDietary: removals = [],
     removeLimits = [],
     ...patch
@@ -166,6 +169,7 @@ function stagedPreferences(
 ): Constraints {
   const {
     foodConfirmed: _,
+    shareAnswers: _sharing,
     removeDietary: removals = [],
     removeLimits = [],
     ...patch
@@ -206,6 +210,28 @@ function stagedPreferences(
     ...patch,
     dietary: [...dietary.values()],
   });
+}
+function reviewedAnswersMatch(
+  reviewed: Constraints | undefined,
+  effective: Constraints | undefined,
+): boolean {
+  if (!reviewed) return false;
+  const project = (input: Constraints | undefined) =>
+    Object.fromEntries(
+      (["availability", "dietary", "preferences", "budget", "travel"] as const)
+        .filter((key) => input?.[key] !== undefined)
+        .map((key) => [key, input![key]]),
+    );
+  return stableHash(project(reviewed)) === stableHash(project(effective));
+}
+function setSharing(
+  s: AppDinner,
+  user: string,
+  enabled: boolean,
+  now: string,
+): void {
+  s.answerSharing ??= {};
+  s.answerSharing[user] = { enabled, at: now, version: "1.0" };
 }
 export class MiniAppService {
   constructor(
@@ -476,11 +502,13 @@ export class MiniAppService {
         );
       const {
         foodConfirmed: _,
+        shareAnswers: _sharing,
         removeDietary: __,
         removeLimits: ___,
         ...preferences
       } = p.preferences;
       s.consents[user] = { active: true, at: now, version: "1.0" };
+      setSharing(s, user, p.preferences.shareAnswers === true, now);
       s.joinRequests[user] = {
         slot:
           s.roster.findIndex((r) => r.id === user) >= 0
@@ -516,6 +544,45 @@ export class MiniAppService {
     }
     let record = await this.record(tx, input.dinnerId),
       s = AppDinnerSchema.parse(record.state);
+    if (input.action === "setAnswerSharing") {
+      const { enabled } = z
+          .object({ enabled: z.boolean() })
+          .strict()
+          .parse(payload),
+        recognized =
+          s.dinner.members.some((m) => m.id === user) || !!s.joinRequests[user];
+      if (!recognized)
+        throw new MiniAppFault(
+          "MEMBERSHIP",
+          403,
+          "This dinner is unavailable.",
+        );
+      if (enabled) {
+        if (record.endedAt || s.dinner.status === "cancelled")
+          throw new MiniAppFault("ENDED", 409, "This dinner has ended.");
+        if (!s.consents[user]?.active)
+          throw new MiniAppFault(
+            "CONSENT",
+            403,
+            "Current consent is required.",
+          );
+        if (input.formVersion !== formVersion(s, user))
+          throw new MiniAppFault(
+            "STALE_FORM",
+            409,
+            "Your answers changed. Review them again before sharing.",
+          );
+      }
+      setSharing(s, user, enabled, now);
+      record = await this.coordinator.save(tx, record, s);
+      if (
+        !authorized(s, user) &&
+        !s.joinRequests[user] &&
+        s.dinner.organizerId !== user
+      )
+        return { ok: true, message: "Your answers are private." };
+      return { ok: true, dinner: await project(tx, record, user, now) };
+    }
     if (input.action === "cancelDinner") {
       z.object({ confirmed: z.literal(true) })
         .strict()
@@ -533,7 +600,7 @@ export class MiniAppService {
         { ...record, endedAt: new Date(now) },
         s,
       );
-      await tx.cancelDinnerWork(record.id);
+      await tx.cancelDinnerWork(record.id, now);
       const recipients = new Set([
         ...s.dinner.members.filter((m) => authorized(s, m.id)).map((m) => m.id),
         ...Object.keys(s.joinRequests).filter((id) => s.consents[id]?.active),
@@ -595,6 +662,16 @@ export class MiniAppService {
         s.joinRequests[user].preferences ?? s.dinner.constraints[user],
         payload,
       );
+      setSharing(
+        s,
+        user,
+        PreferencesSchema.parse(payload).shareAnswers === true &&
+          reviewedAnswersMatch(
+            PreferencesSchema.parse(payload),
+            s.joinRequests[user].preferences,
+          ),
+        now,
+      );
       record = await this.coordinator.save(tx, record, s);
       return { ok: true, dinner: await project(tx, record, user, now) };
     }
@@ -625,6 +702,16 @@ export class MiniAppService {
     switch (input.action) {
       case "savePreferences":
         applyPreferences(s, user, payload, now);
+        setSharing(
+          s,
+          user,
+          PreferencesSchema.parse(payload).shareAnswers === true &&
+            reviewedAnswersMatch(
+              PreferencesSchema.parse(payload),
+              s.dinner.constraints[user],
+            ),
+          now,
+        );
         changed = true;
         schedule = true;
         break;
@@ -711,6 +798,16 @@ export class MiniAppService {
             { ...request.preferences, foodConfirmed: true },
             now,
           );
+        // A returning participant may have firm private limits preserved by the domain merge.
+        // Their new submission cannot grant access to inherited answers they did not review.
+        if (
+          s.answerSharing?.[userId]?.enabled &&
+          !reviewedAnswersMatch(
+            request.preferences,
+            s.dinner.constraints[userId],
+          )
+        )
+          setSharing(s, userId, false, now);
         delete s.joinRequests[userId];
         changed = true;
         schedule = true;

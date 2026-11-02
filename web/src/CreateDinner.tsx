@@ -254,8 +254,8 @@ export function CreateDinner({
               />
               <span>
                 I agree to Muse using my answers for this dinner and sending me
-                planning messages in Telegram. My private constraints stay
-                private.
+                planning messages in Telegram. My answers stay private unless I
+                choose to share them with approved dinner members.
               </span>
             </label>
           )}

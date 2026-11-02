@@ -1,3 +1,10 @@
+import {
+  ResearchFailure,
+  classifyResearchFailure,
+  researchGuidance,
+  researchRetryable,
+  type ResearchAttempt,
+} from "./research.js";
 import { researchVersion } from "./research-version.js";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
@@ -266,7 +273,14 @@ export class Worker {
       await this.stale(work, job.userId, record.id);
       return;
     }
+    const startedMs = Date.now();
     try {
+      if (work.kind === "research")
+        await this.researchProgress(work, record, {
+          status: "running",
+          stage: "provider",
+          startedAt: this.coordinator.now(),
+        });
       if (work.kind === "extract") {
         if (!this.muse) throw new Error("Muse unavailable");
         const decision = await this.muse.extract({
@@ -286,18 +300,31 @@ export class Worker {
           ),
         );
       } else if (work.kind === "research") {
-        if (!this.muse) throw new Error("Muse unavailable");
+        if (!this.muse)
+          throw new ResearchFailure("SERVICE_UNCONFIGURED", "provider");
         if (!canPlan(record.state))
           throw new Error("Required consent unavailable");
         const { context, aliases } = researchContext(
           record.state,
           this.coordinator.now(),
         );
-        if (!context.slots.length) throw new Error("No common slot");
+        if (!context.slots.length)
+          throw new ResearchFailure("NO_COMMON_TIME", "planning");
         const result = await this.muse.research(
           context,
           this.coordinator.now(),
+          async (stage) => {
+            await this.researchProgress(work, record, { stage });
+          },
         );
+        await this.researchProgress(work, record, { stage: "planning" });
+        const counts = {
+          venues: result.venues.length,
+          options: result.options.length,
+          verifiedClaims: result.verification?.verifiedClaims ?? 0,
+          unresolvedClaims: result.verification?.unresolvedClaims ?? 0,
+          sourcesFailed: result.verification?.sourcesFailed ?? 0,
+        };
         await this.commitResult(
           work,
           record,
@@ -359,6 +386,15 @@ export class Worker {
                   Number(a.feasibility.status === "feasible"),
               );
             if (!ranked.length) {
+              await tx.updateResearchAttempt(work.id, {
+                status: "needs_checks",
+                stage: "done",
+                code: "NO_SUITABLE_OPTIONS",
+                finishedAt: this.coordinator.now(),
+                updatedAt: this.coordinator.now(),
+                durationMs: Math.max(0, Date.now() - startedMs),
+                counts,
+              });
               await this.coordinator.save(tx, current, s);
               await this.coordinator.message(
                 tx,
@@ -376,6 +412,20 @@ export class Worker {
               this.coordinator.now(),
             );
             await this.coordinator.save(tx, current, s);
+            await tx.updateResearchAttempt(work.id, {
+              status:
+                ranked[0].feasibility.status === "feasible"
+                  ? "succeeded"
+                  : "needs_checks",
+              stage: "done",
+              ...(ranked[0].feasibility.status === "feasible"
+                ? {}
+                : { code: "EVIDENCE_UNRESOLVED" as const }),
+              finishedAt: this.coordinator.now(),
+              updatedAt: this.coordinator.now(),
+              durationMs: Math.max(0, Date.now() - startedMs),
+              counts,
+            });
             await this.coordinator.announce(tx, s, work.id);
             if (s.dinner.status === "escalated")
               await this.coordinator.message(
@@ -456,7 +506,7 @@ export class Worker {
           },
         );
       }
-    } catch {
+    } catch (error) {
       await this.store.processWork(work.id, this.workerId, async (tx) => {
         const current = await tx.getDinner<AppDinner>(record.id);
         if (
@@ -466,6 +516,51 @@ export class Worker {
           !authorized(current.state, job.userId)
         )
           return;
+        if (work.kind === "research") {
+          const now = this.coordinator.now();
+          if (
+            researchVersion(current.state) !== researchVersion(record.state)
+          ) {
+            await tx.updateResearchAttempt(work.id, {
+              status: "superseded",
+              stage: "done",
+              updatedAt: now,
+              finishedAt: now,
+            });
+            return;
+          }
+          const failure = classifyResearchFailure(error, "planning");
+          await tx.updateResearchAttempt(work.id, {
+            status: "failed",
+            stage: failure.stage,
+            code: failure.code,
+            retryable: researchRetryable(failure.code),
+            ...failure.metadata,
+            updatedAt: now,
+            finishedAt: now,
+            durationMs: Math.max(0, Date.now() - startedMs),
+          });
+          console.error(
+            JSON.stringify({
+              event: "research_failed",
+              reference: work.id,
+              code: failure.code,
+              stage: failure.stage,
+              ...failure.metadata,
+            }),
+          );
+          await this.coordinator.message(
+            tx,
+            work.id,
+            job.userId,
+            `${researchGuidance(failure.code)} Reference: ${work.id}`,
+            {
+              dinnerId: record.id,
+              buttons: this.coordinator.plannerButtons({ dinner: record.id }),
+            },
+          );
+          return;
+        }
         if (work.kind === "calendar" && current.revision === record.revision) {
           await tx.disconnectCalendar(record.id, job.userId);
           const s = structuredClone(current.state);
@@ -514,6 +609,13 @@ export class Worker {
         )
       ) {
         // A newer constraint save queues current research; stale provider results stay silent.
+        if (work.kind === "research")
+          await tx.updateResearchAttempt(work.id, {
+            status: "superseded",
+            stage: "done",
+            updatedAt: this.coordinator.now(),
+            finishedAt: this.coordinator.now(),
+          });
         await this.refreshCalendarTask(tx, work, current, user);
         return;
       }
@@ -527,10 +629,56 @@ export class Worker {
   ): Promise<void> {
     await this.store.processWork(work.id, this.workerId, async (tx) => {
       const current = await tx.getDinner<AppDinner>(dinnerId);
+      if (work.kind === "research")
+        await tx.updateResearchAttempt(work.id, {
+          status:
+            current?.endedAt || current?.state.dinner.status === "cancelled"
+              ? "cancelled"
+              : "superseded",
+          stage: "done",
+          updatedAt: this.coordinator.now(),
+          finishedAt: this.coordinator.now(),
+        });
       if (current) await this.refreshCalendarTask(tx, work, current, user);
     });
   }
 
+  private async researchProgress(
+    work: ClaimedWork,
+    record: DinnerRecord<AppDinner>,
+    patch: Partial<ResearchAttempt>,
+  ): Promise<void> {
+    await this.store.transaction(async (tx) => {
+      const current = await tx.getDinner<AppDinner>(record.id);
+      if (
+        !current ||
+        current.endedAt ||
+        !authorized(current.state, record.organizerId)
+      )
+        return;
+      let attempt = await tx.getResearchAttempt(work.id);
+      if (!attempt)
+        attempt = await tx.createResearchAttempt({
+          id: work.id,
+          dinnerId: record.id,
+          inputVersion: researchVersion(record.state),
+          requestedAt: this.coordinator.now(),
+        });
+      if (researchVersion(current.state) !== researchVersion(record.state)) {
+        await tx.updateResearchAttempt(work.id, {
+          status: "superseded",
+          stage: "done",
+          updatedAt: this.coordinator.now(),
+          finishedAt: this.coordinator.now(),
+        });
+        return;
+      }
+      await tx.updateResearchAttempt(work.id, {
+        ...patch,
+        updatedAt: this.coordinator.now(),
+      });
+    });
+  }
   private async refreshCalendarTask(
     tx: DinnerTx,
     work: ClaimedWork,

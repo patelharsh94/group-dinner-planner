@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AnswersPreview, type ManualAnswers } from "./AnswersPreview";
 import { DateTime } from "luxon";
 import type { PreferencesInput } from "../../src/miniapp/contracts";
 import type { Constraints } from "../../src/domain/index";
@@ -27,6 +28,7 @@ interface Props {
   context: ResponseContext;
   initial?: Constraints;
   foodConfirmed?: boolean;
+  answerSharing?: boolean;
   needsConsent?: boolean;
   busy: boolean;
   error?: string;
@@ -93,6 +95,7 @@ export function PreferencesForm({
   context,
   initial,
   foodConfirmed = false,
+  answerSharing = false,
   needsConsent = false,
   busy,
   error,
@@ -101,6 +104,7 @@ export function PreferencesForm({
 }: Props) {
   // These drafts intentionally initialize once. Polling never replaces unsaved answers.
   const [baseline] = useState(initial);
+  const [shareAnswers, setShareAnswers] = useState(answerSharing);
   const [windows, setWindows] = useState(() =>
     initialWindows(initial, context.timezone),
   );
@@ -303,6 +307,7 @@ export function PreferencesForm({
       const input: PreferencesInput = {
         availability,
         foodConfirmed: true,
+        shareAnswers,
         dietary,
         preferences: preferences
           .split(",")
@@ -332,6 +337,51 @@ export function PreferencesForm({
       );
     }
   }
+  const previewAnswers: ManualAnswers = {
+    availability: windows.flatMap((row) => {
+      try {
+        return [
+          {
+            start: localIso(
+              row.date,
+              row.start,
+              context.timezone,
+              row.startOffset,
+            ),
+            end: localIso(
+              row.overnight
+                ? DateTime.fromISO(row.date).plus({ days: 1 }).toISODate()!
+                : row.date,
+              row.end,
+              context.timezone,
+              row.endOffset,
+            ),
+          },
+        ];
+      } catch {
+        return [];
+      }
+    }),
+    dietary: foodChoice === "none" ? [] : diets,
+    preferences: preferences
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    ...(personalBudget && Number.isFinite(Number(personalBudget))
+      ? {
+          budget: { amount: Number(personalBudget), strength: "firm" as const },
+        }
+      : {}),
+    ...(travelMax && Number.isFinite(Number(travelMax))
+      ? {
+          travel: {
+            maxMinutes: Number(travelMax),
+            origin: origin.trim(),
+            strength: "firm" as const,
+          },
+        }
+      : {}),
+  };
   return (
     <>
       <Brand back={onBack} />
@@ -343,8 +393,9 @@ export function PreferencesForm({
           for you?
         </h1>
         <p className="intro">
-          Your availability and requirements stay private. Everyone sees the
-          plan, not your answers.
+          Your answers stay private unless you choose to share them with
+          approved dinner members. Calendar busy times and private chats are
+          never shared.
         </p>
         <div className="context-pill">
           <Icon name="calendar" size={16} />
@@ -705,7 +756,7 @@ export function PreferencesForm({
               <Field
                 label={`Your personal budget · ${context.currency} per person`}
                 optional
-                hint="A firm maximum, kept private."
+                hint="A firm maximum. Included only if you opt to share your answers."
               >
                 <input
                   type="number"
@@ -734,7 +785,7 @@ export function PreferencesForm({
               {travelMax && (
                 <Field
                   label="Starting point and travel method"
-                  hint="Used privately to check travel time. A neighborhood is fine."
+                  hint="A neighborhood is fine. This starting point is included if you opt to share your answers."
                 >
                   <input
                     placeholder="From Lincoln Park by train"
@@ -746,6 +797,45 @@ export function PreferencesForm({
               )}
             </div>
           </details>
+          <section
+            className="card form-card"
+            aria-label="Answers sharing preview"
+          >
+            <h2>Your answers, your choice</h2>
+            <p className="muted small">
+              Only approved members of this dinner can see answers you choose to
+              share. Sharing includes your availability, food requirements,
+              preferences, personal budget, and travel starting point.
+            </p>
+            <details className="answers-preview">
+              <summary>Preview the exact answers you would share</summary>
+              <AnswersPreview
+                answers={previewAnswers}
+                timezone={context.timezone}
+                currency={context.currency}
+                foodAnswered={!!foodChoice}
+              />
+            </details>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={shareAnswers}
+                onChange={(event) => setShareAnswers(event.target.checked)}
+              />
+              <span>Share these answers with approved dinner members.</span>
+            </label>
+            <p className="field-hint">
+              Calendar busy times, private chats and staff conversations are
+              never included. You can turn sharing off in settings, even after
+              dinner ends.
+            </p>
+            {hasDraft && (
+              <p className="field-hint">
+                Apply your available-hour changes to update this preview before
+                saving.
+              </p>
+            )}
+          </section>
           {needsConsent && (
             <label className="check-label consent">
               <input
@@ -755,8 +845,8 @@ export function PreferencesForm({
               />
               <span>
                 I agree to Muse using my answers for this dinner and sending
-                planning messages in Telegram. Only the shared plan is shown to
-                others.
+                planning messages in Telegram. My answers are shared only if I
+                choose to share them above.
               </span>
             </label>
           )}

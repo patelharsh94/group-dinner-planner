@@ -57,6 +57,10 @@ Calendar free/busy is optional; connect and activate it under settings. Manual a
 
 For frontend development, run `npm run dev:web` alongside `npm run dev`; Vite proxies `/api` to port 3000. The production build serves `/app/` and its APIs from the same Fastify process and HTTPS domain. Opening the app outside Telegram shows the bot link; there is no production authentication bypass. A public HTTPS URL, including the existing Render URL, is sufficient; a custom domain is optional.
 
+Your form answers are private by default. The sharing checkbox previews availability, food requirements, preferences, budget and travel starting point before sharing them with approved members. **Party answers** shows only opted-in responses; calendar busy times, private chats and staff conversations are excluded. Sharing can be disabled in settings even after dinner ends or is cancelled.
+
+**Latest research** distinguishes a queued search, a provider failure and options needing evidence checks. Organizers can expand **Research details** for a safe error code, stage, timestamp, HTTP status, retry guidance and support reference. Credentials belong in hosting configuration, never in the Mini App or chat. The live adapter uses Muse-supported `tool_choice: "auto"` and independently verifies that a live search actually completed.
+
 ## Verify
 
 ```sh

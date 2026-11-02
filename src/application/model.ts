@@ -28,6 +28,16 @@ export const AppDinnerSchema = z.object({
       preferences: ConstraintSchema.optional(),
     }),
   ),
+  answerSharing: z
+    .record(
+      z.string(),
+      z.object({
+        enabled: z.boolean(),
+        at: z.string().datetime({ offset: true }),
+        version: z.literal("1.0"),
+      }),
+    )
+    .optional(),
   reminders: z.record(z.string(), z.array(z.string())),
   collectionNotified: z.boolean().default(false),
 });

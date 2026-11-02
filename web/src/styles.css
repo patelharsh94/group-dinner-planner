@@ -1407,3 +1407,62 @@ input[type="checkbox"] {
   font-size: 10px;
   line-height: 1.6;
 }
+.answers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  margin: 16px 0 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.answers-list > div {
+  min-width: 0;
+}
+.answers-list dt {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--ink);
+}
+.answers-list dd {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.answers-list ul {
+  padding-left: 18px;
+  margin: 0;
+}
+.answers-preview summary,
+.research-diagnostics > summary {
+  min-height: 44px;
+  padding: 10px 0;
+  font-size: 12px;
+  line-height: 1.7;
+  cursor: pointer;
+  color: var(--accent);
+}
+.research-diagnostics[open] > summary {
+  margin-bottom: 10px;
+}
+.research-status h2 {
+  margin-top: 7px;
+}
+.research-status .support-reference {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.party-response {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.party-response > summary {
+  min-height: 44px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 10px 0;
+}
+.party-response > summary .status-badge {
+  margin: 0 0 0 12px;
+}

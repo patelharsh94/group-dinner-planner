@@ -158,6 +158,13 @@ function fakeTx(
     },
     saveProposal: async () => {},
     queue: async (w: any) => out.push(w),
+    createResearchAttempt: async (input: any) => ({
+      ...input,
+      status: "queued",
+      stage: "queued",
+      updatedAt: input.requestedAt,
+    }),
+    updateResearchAttempt: async () => null,
     consumeUsage: async () => true,
     findActiveDinner: async () => null,
     activeDinnerCount: async () => 0,

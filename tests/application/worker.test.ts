@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   createDinner,
   approveMember,
@@ -350,8 +350,19 @@ it("CANCEL-01 discards an in-flight research result after cancellation without s
     requested = false,
     saves = 0,
     messages = 0;
-  const tx = { getDinner: async () => record };
+  const tx = {
+    getDinner: async () => record,
+    getResearchAttempt: async () => null,
+    createResearchAttempt: async (input: any) => ({
+      ...input,
+      status: "queued",
+      stage: "queued",
+      updatedAt: input.requestedAt,
+    }),
+    updateResearchAttempt: async () => null,
+  };
   const store: any = {
+    transaction: async (fn: any) => fn(tx),
     readDinner: async () => structuredClone(record),
     processWork: async (_id: string, _worker: string, fn: any) => fn(tx),
   };
@@ -382,8 +393,7 @@ it("CANCEL-01 discards an in-flight research result after cancellation without s
     attempts: 1,
     payload: { dinnerId: "d1", userId: "1001", revision: 0 },
   } as any);
-  for (let i = 0; i < 10 && !requested; i++) await Promise.resolve();
-  expect(requested).toBe(true);
+  await vi.waitFor(() => expect(requested).toBe(true));
   record.revision++;
   record.endedAt = new Date(now);
   record.state.dinner.status = "cancelled";

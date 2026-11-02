@@ -24,6 +24,7 @@ export function dinnerFixture(overrides: Partial<DinnerView> = {}): DinnerView {
       budget: { amount: 50, basis: "per-person" },
     },
     sharedPlan: "",
+    sharedResponses: [],
     researchPending: false,
     activeVersion: null,
     members: [
@@ -35,6 +36,7 @@ export function dinnerFixture(overrides: Partial<DinnerView> = {}): DinnerView {
       },
     ],
     own: {
+      answerSharing: false,
       constraints: {},
       reminders: false,
       consent: true,

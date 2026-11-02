@@ -596,6 +596,339 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         });
       });
     });
+    it("shares only explicitly opted-in manual answers and revokes safely across edits and receipt replay", async () => {
+      const { id, token } = await create();
+      const save = async (requestId: string, payload: unknown) =>
+        service.mutate(owner, {
+          requestId,
+          action: "savePreferences",
+          dinnerId: id,
+          formVersion: (await service.dinner(owner, id)).formVersion,
+          payload,
+        });
+      await save("share-owner-answers", {
+        ...preferences,
+        shareAnswers: true,
+        preferences: ["SECRET_SHARED_PREFERENCE"],
+        travel: {
+          origin: "SECRET_SHARED_ORIGIN",
+          maxMinutes: 30,
+          strength: "firm",
+        },
+      });
+      await join(id, token);
+      await approve(id);
+      await store.transaction(async (tx) => {
+        const r = (await tx.getDinner<AppDinner>(id))!;
+        r.state.dinner.constraints[owner.id].busy = [
+          {
+            start: "2026-11-06T18:00:00-06:00",
+            end: "2026-11-06T19:00:00-06:00",
+          },
+        ];
+        r.state.dinner.constraints[owner.id].calendarStatus = "connected";
+        await tx.saveDinner(r, r.revision);
+      });
+      let viewer = await service.dinner(guest, id),
+        shared = viewer.sharedResponses.find((r) => r.userId === owner.id)!;
+      expect(shared.status).toBe("shared");
+      expect(shared.constraints?.travel?.origin).toBe("SECRET_SHARED_ORIGIN");
+      expect(shared.constraints).not.toHaveProperty("busy");
+      expect(shared.constraints).not.toHaveProperty("calendarStatus");
+      expect(
+        viewer.sharedResponses.find((r) => r.userId === guest.id),
+      ).toMatchObject({ status: "private" });
+      const stale = (await service.dinner(owner, id)).formVersion;
+      await save("old-client-private-edit", {
+        ...preferences,
+        preferences: ["NEW_PRIVATE_EDIT"],
+      });
+      expect((await service.dinner(owner, id)).own.answerSharing).toBe(false);
+      await expect(
+        service.mutate(owner, {
+          requestId: "stale-sharing-grant",
+          action: "setAnswerSharing",
+          dinnerId: id,
+          formVersion: stale,
+          payload: { enabled: true },
+        }),
+      ).rejects.toMatchObject({ code: "STALE_FORM" });
+      const grant = {
+        requestId: "current-sharing-grant",
+        action: "setAnswerSharing",
+        dinnerId: id,
+        formVersion: (await service.dinner(owner, id)).formVersion,
+        payload: { enabled: true },
+      };
+      await service.mutate(owner, grant);
+      await service.mutate(owner, {
+        requestId: "stale-safe-sharing-revoke",
+        action: "setAnswerSharing",
+        dinnerId: id,
+        formVersion: "stale",
+        payload: { enabled: false },
+      });
+      expect(
+        (await service.mutate(owner, grant)).dinner?.own.answerSharing,
+      ).toBe(false);
+      viewer = await service.dinner(guest, id);
+      shared = viewer.sharedResponses.find((r) => r.userId === owner.id)!;
+      expect(shared.status).toBe("private");
+      expect(shared.constraints).toBeUndefined();
+      expect(JSON.stringify(viewer)).not.toContain("NEW_PRIVATE_EDIT");
+      await service.mutate(owner, {
+        requestId: "share-before-withdrawal",
+        action: "setAnswerSharing",
+        dinnerId: id,
+        formVersion: (await service.dinner(owner, id)).formVersion,
+        payload: { enabled: true },
+      });
+      expect(
+        (await service.dinner(guest, id)).sharedResponses.find(
+          (r) => r.userId === owner.id,
+        )?.status,
+      ).toBe("shared");
+      await service.mutate(owner, {
+        requestId: "stop-shared-participation",
+        action: "stop",
+      });
+      const afterWithdrawal = await service.dinner(guest, id);
+      expect(
+        afterWithdrawal.sharedResponses.find((r) => r.userId === owner.id),
+      ).toBeUndefined();
+      expect(JSON.stringify(afterWithdrawal)).not.toContain("NEW_PRIVATE_EDIT");
+    });
+    it("keeps pending opt-in answers private until approval and allows withdrawal after cancellation", async () => {
+      const { id, token } = await create();
+      const joinInput = {
+        requestId: "sharing-pending-join",
+        action: "join",
+        dinnerId: id,
+        formVersion: (await service.bootstrap(guest, token)).invitation!
+          .formVersion,
+        payload: {
+          invite: token,
+          consent: true,
+          preferences: {
+            ...preferences,
+            shareAnswers: true,
+            preferences: ["SECRET_PENDING_OPT_IN"],
+          },
+        },
+      };
+      const pending = await service.mutate(guest, joinInput);
+      expect(pending.dinner?.own.answerSharing).toBe(true);
+      expect(pending.dinner?.sharedResponses).toEqual([]);
+      expect(pending.dinner?.research).toBeUndefined();
+      expect(pending.dinner?.researchDetails).toBeUndefined();
+      expect(JSON.stringify(await service.dinner(owner, id))).not.toContain(
+        "SECRET_PENDING_OPT_IN",
+      );
+      await approve(id);
+      expect(
+        (await service.dinner(owner, id)).sharedResponses.find(
+          (r) => r.userId === guest.id,
+        )?.constraints?.preferences,
+      ).toEqual(["SECRET_PENDING_OPT_IN"]);
+      await service.mutate(owner, {
+        requestId: "cancel-shared-dinner",
+        action: "cancelDinner",
+        dinnerId: id,
+        payload: { confirmed: true },
+      });
+      await service.mutate(guest, {
+        requestId: "terminal-sharing-revoke",
+        action: "setAnswerSharing",
+        dinnerId: id,
+        formVersion: "stale",
+        payload: { enabled: false },
+      });
+      expect(
+        (await service.dinner(owner, id)).sharedResponses.find(
+          (r) => r.userId === guest.id,
+        )?.status,
+      ).toBe("private");
+      await expect(
+        service.mutate(guest, {
+          requestId: "terminal-sharing-grant",
+          action: "setAnswerSharing",
+          dinnerId: id,
+          formVersion: (await service.dinner(guest, id)).formVersion,
+          payload: { enabled: true },
+        }),
+      ).rejects.toMatchObject({ code: "ENDED" });
+    });
+    it("persists sanitized research attempts, restricts organizer diagnostics, and cascades cancellation/deletion", async () => {
+      const { id, token } = await create(3);
+      await join(id, token);
+      await approve(id);
+      await store.transaction(async (tx) => {
+        const queued = await tx.createResearchAttempt({
+          id: "diagnostic-attempt-1",
+          dinnerId: id,
+          inputVersion: "input-version",
+          requestedAt: now,
+        });
+        expect(queued).toMatchObject({
+          status: "queued",
+          stage: "queued",
+          updatedAt: now,
+        });
+        await tx.updateResearchAttempt(queued.id, {
+          status: "running",
+          stage: "provider",
+          startedAt: now,
+        });
+        await tx.updateResearchAttempt(queued.id, {
+          status: "failed",
+          stage: "provider",
+          code: "AUTH_INVALID",
+          httpStatus: 401,
+          providerRequestId: "safe-request-id",
+          finishedAt: now,
+          durationMs: 12,
+        });
+      });
+      await join(id, token, other);
+      const pendingView = await service.dinner(other, id);
+      expect(pendingView.research).toBeUndefined();
+      expect(pendingView.researchDetails).toBeUndefined();
+      expect(pendingView.sharedResponses).toEqual([]);
+      const ownerView = await service.dinner(owner, id),
+        memberView = await service.dinner(guest, id);
+      expect(ownerView.researchDetails).toMatchObject({
+        code: "AUTH_INVALID",
+        httpStatus: 401,
+        providerRequestId: "safe-request-id",
+      });
+      expect(memberView.research).toMatchObject({ status: "failed" });
+      expect(memberView.researchDetails).toBeUndefined();
+      expect(JSON.stringify(memberView)).not.toContain("safe-request-id");
+      await expect(
+        store.transaction((tx) =>
+          tx.updateResearchAttempt("diagnostic-attempt-1", {
+            rawResponse: "SECRET_PROVIDER_DATA",
+          } as never),
+        ),
+      ).rejects.toThrow();
+      await store.transaction(async (tx) => {
+        await tx.createResearchAttempt({
+          id: "diagnostic-attempt-2",
+          dinnerId: id,
+          inputVersion: "new-version",
+          requestedAt: now,
+        });
+        expect((await tx.getLatestResearchAttempt(id))?.id).toBe(
+          "diagnostic-attempt-2",
+        );
+      });
+      await service.mutate(owner, {
+        requestId: "cancel-research-attempt",
+        action: "cancelDinner",
+        dinnerId: id,
+        payload: { confirmed: true },
+      });
+      await store.transaction(async (tx) => {
+        expect(
+          await tx.getResearchAttempt("diagnostic-attempt-2"),
+        ).toMatchObject({ status: "cancelled", stage: "done" });
+        await tx.updateResearchAttempt("diagnostic-attempt-2", {
+          status: "running",
+          stage: "provider",
+        });
+        expect(
+          (await tx.getResearchAttempt("diagnostic-attempt-2"))?.status,
+        ).toBe("cancelled");
+        await tx.deleteDinner(id);
+      });
+      expect(
+        (
+          await db.pool.query(
+            "SELECT count(*)::int AS count FROM research_runs WHERE dinner_id=$1",
+            [id],
+          )
+        ).rows[0].count,
+      ).toBe(0);
+    });
+    it("does not share inherited private firm limits that a returning guest did not review", async () => {
+      const { id, token } = await create();
+      await service.mutate(guest, {
+        requestId: "old-private-limit-join",
+        action: "join",
+        dinnerId: id,
+        formVersion: (await service.bootstrap(guest, token)).invitation!
+          .formVersion,
+        payload: {
+          invite: token,
+          consent: true,
+          preferences: {
+            ...preferences,
+            shareAnswers: false,
+            budget: { amount: 45, strength: "firm" },
+            travel: {
+              origin: "SECRET_OLD_HOME",
+              maxMinutes: 30,
+              strength: "firm",
+            },
+            dietary: [
+              { requirement: "vegan", strength: "firm", allergy: false },
+            ],
+          },
+        },
+      });
+      await approve(id);
+      await service.mutate(guest, {
+        requestId: "stop-before-sharing-rejoin",
+        action: "stop",
+      });
+      await service.mutate(guest, {
+        requestId: "reviewed-new-answer-rejoin",
+        action: "join",
+        dinnerId: id,
+        formVersion: (await service.bootstrap(guest, token)).invitation!
+          .formVersion,
+        payload: {
+          invite: token,
+          consent: true,
+          preferences: {
+            ...preferences,
+            shareAnswers: true,
+            preferences: ["only-this-was-reviewed"],
+          },
+        },
+      });
+      await service.mutate(owner, {
+        requestId: "approve-review-limited-rejoin",
+        action: "approve",
+        dinnerId: id,
+        payload: { userId: guest.id },
+      });
+      const own = await service.dinner(guest, id);
+      expect(own.own.constraints.travel?.origin).toBe("SECRET_OLD_HOME");
+      expect(own.own.constraints.budget).toEqual({
+        amount: 45,
+        strength: "firm",
+      });
+      expect(own.own.constraints.dietary).toHaveLength(1);
+      expect(own.own.answerSharing).toBe(false);
+      const host = await service.dinner(owner, id);
+      expect(
+        host.sharedResponses.find((r) => r.userId === guest.id)?.status,
+      ).toBe("private");
+      expect(JSON.stringify(host)).not.toContain("SECRET_OLD_HOME");
+      await service.mutate(guest, {
+        requestId: "explicit-review-inherited-limits",
+        action: "setAnswerSharing",
+        dinnerId: id,
+        formVersion: own.formVersion,
+        payload: { enabled: true },
+      });
+      expect(
+        (await service.dinner(owner, id)).sharedResponses.find(
+          (r) => r.userId === guest.id,
+        )?.constraints?.travel?.origin,
+      ).toBe("SECRET_OLD_HOME");
+    });
     it("requires trusted private bot start even for valid Telegram identity", async () => {
       await expect(
         service.bootstrap({ id: "900", name: "Unknown" }),

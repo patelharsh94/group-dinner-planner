@@ -1,3 +1,5 @@
+import { AnswersPreview } from "./AnswersPreview";
+import { ResearchStatus } from "./ResearchStatus";
 import { useState } from "react";
 import type {
   DinnerView,
@@ -38,6 +40,9 @@ export function Dashboard({
   onAction,
   onCalendar,
 }: Props) {
+  const researchPending = d.research
+    ? d.research.status === "queued" || d.research.status === "running"
+    : d.researchPending;
   const cancelled = d.status === "cancelled";
   const owner = d.role === "organizer",
     pending = d.role === "pending",
@@ -106,6 +111,7 @@ export function Dashboard({
           ))}
         {error && <Notice kind="error">{error}</Notice>}
         {notice && <Notice kind="success">{notice}</Notice>}
+        <ResearchStatus dinner={d} />
         {cancelled ? (
           <section className="card form-card">
             <span className="status-badge">Cancelled</span>
@@ -146,8 +152,9 @@ export function Dashboard({
             </span>
             <h2>The organizer will let you in.</h2>
             <p className="muted">
-              Your seat is waiting for approval. Your private answers are saved,
-              and you can still update them.
+              Your seat is waiting for approval. Your answers are saved. Any
+              chosen sharing starts only after approval, and you can still
+              update your answers.
             </p>
             <Button variant="secondary" onClick={onEdit}>
               Edit my answers
@@ -162,7 +169,7 @@ export function Dashboard({
                     className={`status-badge ${d.status === "agreed" ? "success" : ""}`}
                   >
                     <span className="pulse-dot" />
-                    {d.researchPending
+                    {researchPending
                       ? "Finding your table"
                       : (statusLabels[d.status] ?? "Dinner in progress")}
                   </span>
@@ -277,7 +284,9 @@ export function Dashboard({
                   </h2>
                   <p className="muted small">
                     {d.own.foodConfirmed
-                      ? "Kept private. Easy to change."
+                      ? d.own.answerSharing
+                        ? "Shared by your choice. Easy to change."
+                        : "Private unless you choose to share. Easy to change."
                       : "Pick your dates and tell Muse about food."}
                   </p>
                 </div>
@@ -291,7 +300,7 @@ export function Dashboard({
               </section>
             )}
 
-            {d.researchPending && (
+            {researchPending && !d.research && (
               <Notice>
                 <strong>Muse is checking dinner options.</strong>
                 <p>
@@ -511,19 +520,23 @@ export function Dashboard({
                     <div>✳</div>
                   </div>
                   <h2>
-                    {complete < expected
-                      ? "First, a little from everyone."
-                      : "Ready to find your table?"}
+                    {d.research?.status === "failed"
+                      ? "Research is paused."
+                      : complete < expected
+                        ? "First, a little from everyone."
+                        : "Ready to find your table?"}
                   </h2>
                   <p className="muted">
-                    {complete < expected
-                      ? "Once everyone has joined and answered, Muse can check times and research places."
-                      : "Muse will look for places that fit the whole group and bring back up to two plans."}
+                    {d.research?.status === "failed"
+                      ? "See the latest research status above. Your group's saved answers are preserved."
+                      : complete < expected
+                        ? "Once everyone has joined and answered, Muse can check times and research places."
+                        : "Muse will look for places that fit the whole group and bring back up to two plans."}
                   </p>
                   <Button
                     busy={busy}
                     disabled={
-                      d.researchPending ||
+                      researchPending ||
                       complete < expected ||
                       d.progress.approved < expected
                     }
@@ -583,7 +596,7 @@ export function Dashboard({
               d.status !== "agreed" && (
                 <Button
                   variant="quiet"
-                  busy={busy || d.researchPending}
+                  busy={busy || researchPending}
                   className="full"
                   onClick={() => void onAction("research")}
                 >
@@ -595,8 +608,48 @@ export function Dashboard({
             )}
           </>
         )}
+        {(d.role === "organizer" || d.role === "member") &&
+          d.own.consent &&
+          (d.sharedResponses?.length ?? 0) > 0 && (
+            <section className="card form-card" aria-label="Party answers">
+              <h2>Party answers</h2>
+              <p className="muted small">
+                Each person chooses whether to share their form answers with
+                approved dinner members. Private answers are never shown.
+              </p>
+              {d.sharedResponses.map((response) => (
+                <details className="party-response" key={response.userId}>
+                  <summary>
+                    <strong>
+                      {response.userId === actorId ? "You" : response.name}
+                    </strong>
+                    <span className="status-badge">
+                      {response.status === "shared"
+                        ? "Shared"
+                        : response.status === "private"
+                          ? "Private"
+                          : "Not submitted"}
+                    </span>
+                  </summary>
+                  {response.status === "shared" && response.constraints ? (
+                    <AnswersPreview
+                      answers={response.constraints}
+                      timezone={d.setup.timezone}
+                      currency={d.setup.currency}
+                    />
+                  ) : (
+                    <p className="muted small">
+                      {response.status === "private"
+                        ? "This person's answers stay private."
+                        : "No submitted answers to share."}
+                    </p>
+                  )}
+                </details>
+              ))}
+            </section>
+          )}
         <p className="footnote">
-          Private answers. Shared plans. Actual agreement.
+          Your sharing choice. Shared plans. Actual agreement.
         </p>
       </main>
       {change && (

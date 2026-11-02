@@ -21,3 +21,6 @@ Canonical IDs in SPEC.md map to executable Vitest scenarios below. Domain scenar
 
 - **UI-07 / UI-08:** `web/tests/brand.test.tsx`, frontend follow-up editor/budget scenarios and `web/browser/layout.pw.ts` exercise branding, native control containment, mobile stacking and availability editing. Browser scenarios run in Chromium and iPhone WebKit.
 - **CANCEL-01:** domain cancellation scenarios; `tests/persistence/miniapp.test.ts` terminal lifecycle, privacy cleanup, notification deduplication and racing provider/confirmation; worker/coordinator cancellation scenarios protect delivery, legacy commands and privacy opt-out; frontend cancellation confirmation and read-only views.
+
+- **SHARE-01:** real-Postgres sharing/revocation/inherited-field scenarios, `tests/persistence/research.test.ts`, frontend sharing preview and terminal revocation tests, and mobile sharing/research browser flows.
+- **RES-02:** adapter typed error and malformed output tests, real-Postgres `research-flow.test.ts` safe 401/retry conversation, research lifecycle reconciliation tests, and organizer/member diagnostic UI isolation.
