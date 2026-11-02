@@ -14,6 +14,7 @@ export interface MessagePayload {
   reminderDay?: string;
   reply?: boolean;
   version?: number;
+  notification?: "dinner-cancelled";
 }
 const callbackButton = z.object({
   text: z.string().min(1).max(64),

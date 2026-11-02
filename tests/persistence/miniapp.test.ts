@@ -274,6 +274,327 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       expect(calendar).toContain(`SEQUENCE:${finalVersion}`);
       expect(calendar).toContain("Synthetic alternative");
       expect(muse.research).toHaveBeenCalledTimes(3);
+      // Cancel while a real leased provider call is in flight and a fresh confirmation races.
+      // The provider is still the labeled synthetic fixture, paused at the external-IO boundary.
+      await act(owner, "research");
+      const racingWork = await store.claimOutbox(
+        leaseOwner,
+        180000,
+        "research",
+      );
+      expect(racingWork).not.toBeNull();
+      let releaseProvider!: () => void, providerStarted!: () => void;
+      const gate = new Promise<void>((resolve) => {
+          releaseProvider = resolve;
+        }),
+        started = new Promise<void>((resolve) => {
+          providerStarted = resolve;
+        });
+      const originalResearch = muse.research.getMockImplementation()!;
+      muse.research.mockImplementationOnce(async (context) => {
+        providerStarted();
+        await gate;
+        return originalResearch(context);
+      });
+      const pendingProvider = worker.runJob(racingWork!);
+      await started;
+      const historyLength = (await state()).proposals.length;
+      const race = await Promise.allSettled([
+        act(guest, "confirm", { version: finalVersion }),
+        act(owner, "cancelDinner", { confirmed: true }),
+      ]);
+      expect(race[1].status).toBe("fulfilled");
+      releaseProvider();
+      await pendingProvider;
+      const terminal = await state();
+      expect(terminal.status).toBe("cancelled");
+      expect(terminal.activeVersion).toBeNull();
+      expect(terminal.confirmations).toEqual({});
+      expect(terminal.proposals).toHaveLength(historyLength);
+      expect(
+        (
+          await db.pool.query("SELECT status FROM outbox WHERE id=$1", [
+            racingWork!.id,
+          ])
+        ).rows[0].status,
+      ).toBe("suppressed");
+      await expect(service.calendar(guest, id)).rejects.toThrow();
+    });
+    it("cancels an agreed dinner atomically, scrubs pending input, notifies once, and remains terminal", async () => {
+      const { id, token } = await create(3);
+      await join(id, token);
+      await approve(id);
+      await join(id, token, other);
+      await store.transaction(async (tx) => {
+        const r = (await tx.getDinner<AppDinner>(id))!,
+          next = structuredClone(r.state);
+        next.dinner = proposeOptions(
+          next.dinner,
+          owner.id,
+          [
+            {
+              venueId: "fixture",
+              start: "2026-11-05T18:00:00-06:00",
+              end: "2026-11-05T19:30:00-06:00",
+              durationMinutes: 90,
+              pricePerPerson: 40,
+              priceBasis: "per-person",
+            },
+          ],
+          now,
+        );
+        next.dinner.status = "agreed";
+        next.dinner.confirmations = {
+          [owner.id]: next.dinner.activeVersion!,
+          [guest.id]: next.dinner.activeVersion!,
+        };
+        next.joinRequests["400"] = {
+          slot: null,
+          name: "Withdrawn pending",
+          at: now,
+          preferences: { preferences: ["SECRET_WITHDRAWN_PENDING"] },
+        };
+        next.consents["400"] = { active: false, at: now, version: "1.0" };
+        await coordinator.save(tx, r, next);
+        await tx.createOAuthState(
+          "cancel-oauth",
+          id,
+          guest.id,
+          new Date(Date.now() + 600000),
+        );
+        await tx.setCalendarConnection(id, guest.id, "SECRET_ENCRYPTED_TOKEN");
+        await tx.queue({
+          id: "cancel-private-job",
+          dedupeKey: "cancel-private-job",
+          kind: "research",
+          dinnerId: id,
+          payload: { secret: "SECRET_PENDING_JOB" },
+        });
+        await tx.queue({
+          id: "cancel-private-message",
+          dedupeKey: "cancel-private-message",
+          dinnerId: id,
+          subjectUserId: guest.id,
+          payload: { text: "SECRET_PENDING_MESSAGE" },
+        });
+      });
+      const before = (await store.readDinner<AppDinner>(id))!;
+      await expect(
+        service.mutate(guest, {
+          requestId: "guest-cannot-cancel",
+          action: "cancelDinner",
+          dinnerId: id,
+          payload: { confirmed: true },
+        }),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
+        service.mutate(owner, {
+          requestId: "cancel-needs-confirmation",
+          action: "cancelDinner",
+          dinnerId: id,
+          payload: { confirmed: false },
+        }),
+      ).rejects.toThrow();
+      const request = {
+        requestId: "owner-cancel-dinner",
+        action: "cancelDinner",
+        dinnerId: id,
+        payload: { confirmed: true },
+      };
+      const response = await service.mutate(owner, request);
+      expect(response.dinner).toMatchObject({
+        status: "cancelled",
+        ended: true,
+        activeVersion: null,
+        cancellation: { at: now, by: owner.id },
+      });
+      let cancelled = (await store.readDinner<AppDinner>(id))!;
+      expect(cancelled.endedAt?.toISOString()).toBe(now.replace("Z", ".000Z"));
+      expect(cancelled.state.dinner.confirmations).toEqual({});
+      expect(cancelled.state.dinner.proposals).toEqual(
+        before.state.dinner.proposals,
+      );
+      expect(cancelled.state.joinRequests[other.id]).toMatchObject({
+        slot: null,
+        name: other.name,
+      });
+      expect(
+        cancelled.state.joinRequests[other.id].preferences,
+      ).toBeUndefined();
+      expect(cancelled.state.joinRequests["400"].preferences).toBeUndefined();
+      expect(
+        (
+          await db.pool.query(
+            "SELECT count(*)::int AS count FROM proposal_versions WHERE dinner_id=$1",
+            [id],
+          )
+        ).rows[0].count,
+      ).toBe(1);
+      expect(
+        (
+          await db.pool.query(
+            "SELECT count(*)::int AS count FROM invitations WHERE dinner_id=$1",
+            [id],
+          )
+        ).rows[0].count,
+      ).toBe(0);
+      expect(
+        (
+          await db.pool.query(
+            "SELECT count(*)::int AS count FROM oauth_states WHERE dinner_id=$1",
+            [id],
+          )
+        ).rows[0].count,
+      ).toBe(0);
+      expect(
+        (
+          await db.pool.query(
+            "SELECT count(*)::int AS count FROM calendar_connections WHERE dinner_id=$1",
+            [id],
+          )
+        ).rows[0].count,
+      ).toBe(0);
+      const oldWork = await db.pool.query(
+        "SELECT status,payload FROM outbox WHERE id IN ('cancel-private-job','cancel-private-message')",
+      );
+      expect(oldWork.rows).toEqual([
+        { status: "suppressed", payload: {} },
+        { status: "suppressed", payload: {} },
+      ]);
+      const notices = await db.pool.query(
+        "SELECT subject_user_id FROM outbox WHERE dinner_id=$1 AND payload->>'notification'='dinner-cancelled' ORDER BY subject_user_id",
+        [id],
+      );
+      expect(notices.rows.map((r) => r.subject_user_id)).toEqual([
+        owner.id,
+        guest.id,
+        other.id,
+      ]);
+      expect((await service.dinner(other, id)).own.constraints).toEqual({});
+      expect((await service.dinner(other, id)).sharedPlan).toContain(
+        "cancelled",
+      );
+      await service.mutate(owner, request);
+      const laterService = new MiniAppService(
+        store,
+        new Coordinator(config, undefined, () => "2026-11-02T18:00:00Z"),
+        config,
+      );
+      await laterService.mutate(owner, {
+        ...request,
+        requestId: "owner-cancel-again",
+      });
+      cancelled = (await store.readDinner<AppDinner>(id))!;
+      expect(cancelled.revision).toBe(before.revision + 1);
+      expect(cancelled.state.dinner.cancellation?.at).toBe(now);
+      expect(
+        (
+          await db.pool.query(
+            "SELECT count(*)::int AS count FROM outbox WHERE dinner_id=$1 AND payload->>'notification'='dinner-cancelled'",
+            [id],
+          )
+        ).rows[0].count,
+      ).toBe(3);
+      for (const action of [
+        "resume",
+        "research",
+        "confirm",
+        "savePreferences",
+        "updateDinner",
+        "approve",
+        "select",
+        "calendarConnect",
+        "calendarActivate",
+        "calendarSync",
+        "reminders",
+        "invite",
+      ])
+        await expect(
+          service.mutate(owner, {
+            requestId: `after-cancel-${action}`,
+            action,
+            dinnerId: id,
+            payload: { consent: true, version: 1 },
+          }),
+        ).rejects.toMatchObject({ code: "CANCELLED" });
+      await expect(service.calendar(owner, id)).rejects.toThrow();
+      await expect(service.bootstrap(other, token)).rejects.toMatchObject({
+        code: "INVITATION",
+      });
+      const replacement = await service.mutate(owner, {
+        requestId: "new-after-cancellation",
+        action: "create",
+        payload: setup,
+      });
+      expect(replacement.dinner?.id).not.toBe(id);
+      expect(await store.activeDinnerCount()).toBe(1);
+      await store.transaction(async (tx) => {
+        const r = (await tx.getDinner<AppDinner>(id))!;
+        await tx.saveDinner(
+          { ...r, endedAt: new Date(Date.now() - 8 * 86400000) },
+          r.revision,
+        );
+      });
+      await store.purgeExpired();
+      expect(await store.readDinner(id)).toBeNull();
+    });
+    it("scrubs legacy staged private answers only for the cancelled dinner", async () => {
+      const { id } = await create();
+      const unrelated = await service.mutate(other, {
+        requestId: "unrelated-dinner-create",
+        action: "create",
+        payload: setup,
+      });
+      const unrelatedId = unrelated.dinner!.id;
+      const otherDraft = {
+        type: "staff",
+        dinnerId: unrelatedId,
+        report: "SECRET_OTHER_DINNER_STAFF",
+      };
+      await store.transaction(async (tx) => {
+        await tx.setSession(owner.id, {
+          currentDinnerId: id,
+          pendingSetup: null,
+          pendingOnboard: {
+            type: "patch",
+            dinnerId: id,
+            patch: { preferences: ["SECRET_CANCELLED_PATCH"] },
+          },
+        });
+        await tx.setSession(guest.id, {
+          currentDinnerId: id,
+          pendingSetup: null,
+          pendingOnboard: {
+            type: "staff",
+            dinnerId: id,
+            report: "SECRET_CANCELLED_STAFF",
+          },
+        });
+        await tx.setSession(other.id, {
+          currentDinnerId: unrelatedId,
+          pendingSetup: { private: "unrelated setup" },
+          pendingOnboard: otherDraft,
+        });
+      });
+      await service.mutate(owner, {
+        requestId: "cancel-legacy-staged-private",
+        action: "cancelDinner",
+        dinnerId: id,
+        payload: { confirmed: true },
+      });
+      await store.transaction(async (tx) => {
+        for (const actor of [owner, guest])
+          expect(await tx.getSession(actor.id)).toEqual({
+            currentDinnerId: id,
+            pendingSetup: null,
+            pendingOnboard: null,
+          });
+        expect(await tx.getSession(other.id)).toEqual({
+          currentDinnerId: unrelatedId,
+          pendingSetup: { private: "unrelated setup" },
+          pendingOnboard: otherDraft,
+        });
+      });
     });
     it("requires trusted private bot start even for valid Telegram identity", async () => {
       await expect(

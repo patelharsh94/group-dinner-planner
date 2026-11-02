@@ -108,6 +108,12 @@ export function PreferencesForm({
   const [bulkStart, setBulkStart] = useState("19:00"),
     [bulkEnd, setBulkEnd] = useState("22:00"),
     [bulkOvernight, setBulkOvernight] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftOffsets, setDraftOffsets] = useState<
+    Record<string, { start?: number; end?: number }>
+  >({});
+  const [editorError, setEditorError] = useState("");
+  const hasDraft = selectedDates.length > 0;
   const [foodChoice, setFoodChoice] = useState<"" | "none" | "requirements">(
     foodConfirmed ? (initial?.dietary?.length ? "requirements" : "none") : "",
   );
@@ -132,10 +138,59 @@ export function PreferencesForm({
     day = day.plus({ days: 1 })
   )
     days.push(day.toISODate()!);
-  function editRow(id: string, patch: Partial<WindowRow>) {
-    setWindows((rows) =>
-      rows.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+  function windowInterval(row: WindowRow, index: number) {
+    if (row.date < context.windowStart || row.date > context.windowEnd)
+      throw new Error(
+        `Time window ${index + 1} falls outside this dinner's date window.`,
+      );
+    const start = localIso(
+      row.date,
+      row.start,
+      context.timezone,
+      row.startOffset,
     );
+    const endDate = row.overnight
+      ? DateTime.fromISO(row.date).plus({ days: 1 }).toISODate()!
+      : row.date;
+    const end = localIso(endDate, row.end, context.timezone, row.endOffset);
+    if (Date.parse(end) <= Date.parse(start))
+      throw new Error(
+        `Time window ${index + 1}: leave-by time must be later. Select “Ends next day” for an overnight window.`,
+      );
+    return { start, end };
+  }
+  function discardEditor() {
+    setSelectedDates([]);
+    setEditingId(null);
+    setDraftOffsets({});
+    setEditorError("");
+    setLocalError("");
+  }
+  function editWindow(row: WindowRow) {
+    if (hasDraft) return;
+    setSelectedDates([row.date]);
+    setEditingId(row.id);
+    setBulkStart(row.start);
+    setBulkEnd(row.end);
+    setBulkOvernight(row.overnight);
+    setDraftOffsets({
+      [row.date]: { start: row.startOffset, end: row.endOffset },
+    });
+    setEditorError("");
+    setLocalError("");
+  }
+  function changeEditorTime(boundary: "start" | "end", value: string) {
+    if (boundary === "start") setBulkStart(value);
+    else setBulkEnd(value);
+    setDraftOffsets((offsets) =>
+      Object.fromEntries(
+        Object.entries(offsets).map(([date, choice]) => [
+          date,
+          { ...choice, [boundary]: undefined },
+        ]),
+      ),
+    );
+    setEditorError("");
   }
   function addDiet(requirement: string) {
     const name = requirement.trim();
@@ -150,36 +205,55 @@ export function PreferencesForm({
     setCustomDiet("");
   }
   function applyHours() {
-    if (!selectedDates.length) return;
-    const additions = selectedDates
-      .filter(
-        (date) =>
-          !windows.some(
-            (row) =>
-              row.date === date &&
-              row.start === bulkStart &&
-              row.end === bulkEnd &&
-              row.overnight === bulkOvernight,
-          ),
-      )
-      .map((date) => ({
-        id: crypto.randomUUID(),
+    if (!hasDraft) return;
+    setLocalError("");
+    setEditorError("");
+    try {
+      const additions = selectedDates.map((date) => ({
+        id: editingId ?? crypto.randomUUID(),
         date,
         start: bulkStart,
         end: bulkEnd,
         overnight: bulkOvernight,
+        startOffset: draftOffsets[date]?.start,
+        endOffset: draftOffsets[date]?.end,
       }));
-    setWindows((items) =>
-      [...items, ...additions].sort((a, b) =>
-        `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`),
-      ),
-    );
-    setSelectedDates([]);
+      const serialized = additions.map(windowInterval);
+      const existing = windows.filter((row) => row.id !== editingId);
+      const unique = additions.filter(
+        (_, index) =>
+          !existing.some((row) => {
+            const interval = windowInterval(row, 0);
+            return (
+              interval.start === serialized[index].start &&
+              interval.end === serialized[index].end
+            );
+          }),
+      );
+      if (existing.length + unique.length > 64)
+        throw new Error("You can save up to 64 available windows.");
+      setWindows(
+        [...existing, ...unique].sort((a, b) =>
+          `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`),
+        ),
+      );
+      discardEditor();
+    } catch (failure) {
+      setEditorError(
+        failure instanceof Error
+          ? failure.message
+          : "Check these available hours.",
+      );
+    }
   }
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setLocalError("");
     try {
+      if (hasDraft)
+        throw new Error(
+          "Apply or discard your available-hour changes before saving your answers.",
+        );
       if (!windows.length)
         throw new Error(
           "Add at least one time window when you are willing to come.",
@@ -194,27 +268,7 @@ export function PreferencesForm({
         throw new Error(
           "Please agree to coordination for this dinner before saving.",
         );
-      const availability = windows.map((row, i) => {
-        if (row.date < context.windowStart || row.date > context.windowEnd)
-          throw new Error(
-            `Time window ${i + 1} falls outside this dinner's date window.`,
-          );
-        const start = localIso(
-          row.date,
-          row.start,
-          context.timezone,
-          row.startOffset,
-        );
-        const endDate = row.overnight
-          ? DateTime.fromISO(row.date).plus({ days: 1 }).toISODate()!
-          : row.date;
-        const end = localIso(endDate, row.end, context.timezone, row.endOffset);
-        if (Date.parse(end) <= Date.parse(start))
-          throw new Error(
-            `Time window ${i + 1}: end time must be later. Select “Ends next day” for an overnight window.`,
-          );
-        return { start, end };
-      });
+      const availability = windows.map(windowInterval);
       const dietary = foodChoice === "none" ? [] : diets;
       const removeDietary = (baseline?.dietary ?? [])
         .filter(
@@ -304,8 +358,8 @@ export function PreferencesForm({
               <h2>When could you join?</h2>
             </div>
             <p className="muted small">
-              Select dates, then add your available hours. Nothing is selected
-              for you.
+              Select the dates you are willing to come. Nothing is selected for
+              you.
             </p>
             <div
               className="date-grid"
@@ -321,6 +375,7 @@ export function PreferencesForm({
                     aria-label={dateLabel(date, "long")}
                     aria-pressed={selectedDates.includes(date)}
                     className={`date-cell ${selectedDates.includes(date) ? "selected" : ""} ${windows.some((row) => row.date === date) ? "has-window" : ""}`}
+                    disabled={editingId !== null}
                     onClick={() =>
                       setSelectedDates((dates) =>
                         dates.includes(date)
@@ -336,135 +391,166 @@ export function PreferencesForm({
                 );
               })}
             </div>
-            <div className="bulk-hours">
-              <div className="field-pair">
-                <Field label="From">
-                  <input
-                    aria-label="Available from"
-                    type="time"
-                    value={bulkStart}
-                    onChange={(e) => setBulkStart(e.target.value)}
-                  />
-                </Field>
-                <Field label="Until">
-                  <input
-                    aria-label="Available until"
-                    type="time"
-                    value={bulkEnd}
-                    onChange={(e) => setBulkEnd(e.target.value)}
-                  />
-                </Field>
-              </div>
-              <label className="check-label small">
-                <input
-                  type="checkbox"
-                  checked={bulkOvernight}
-                  onChange={(e) => setBulkOvernight(e.target.checked)}
-                />
-                Ends next day
-              </label>
-              <Button
-                variant="secondary"
-                disabled={
-                  !selectedDates.length ||
-                  windows.length + selectedDates.length > 64
-                }
-                onClick={applyHours}
-                className="full"
-              >
-                <Icon name="plus" size={17} />
-                {selectedDates.length
-                  ? `Add hours to ${selectedDates.length} ${selectedDates.length === 1 ? "date" : "dates"}`
-                  : "Select dates above"}
-              </Button>
-            </div>
             <p className="field-hint timezone-note">
-              <Icon name="clock" size={14} /> All times:{" "}
+              <Icon name="clock" size={14} /> Dinner lasts{" "}
+              {context.durationMinutes} minutes · All times:{" "}
               {friendlyZone(context.timezone)}
             </p>
+            {hasDraft && (
+              <div
+                className="availability-editor"
+                role="group"
+                aria-label="Available hours editor"
+              >
+                <h3>
+                  {editingId
+                    ? `Edit ${dateLabel(selectedDates[0], "long")}`
+                    : `Hours for ${selectedDates.length} selected ${selectedDates.length === 1 ? "date" : "dates"}`}
+                </h3>
+                <p className="muted small">
+                  This is your available window, not the dinner time. Muse will
+                  fit the {context.durationMinutes}-minute dinner within it.
+                </p>
+                <div className="field-pair">
+                  <Field label="I'm free from">
+                    <input
+                      type="time"
+                      value={bulkStart}
+                      onChange={(event) =>
+                        changeEditorTime("start", event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field label="I need to leave by">
+                    <input
+                      type="time"
+                      value={bulkEnd}
+                      onChange={(event) =>
+                        changeEditorTime("end", event.target.value)
+                      }
+                    />
+                  </Field>
+                </div>
+                <label className="check-label small">
+                  <input
+                    type="checkbox"
+                    checked={bulkOvernight}
+                    onChange={(event) => {
+                      setBulkOvernight(event.target.checked);
+                      setDraftOffsets((offsets) =>
+                        Object.fromEntries(
+                          Object.entries(offsets).map(([date, choice]) => [
+                            date,
+                            { ...choice, end: undefined },
+                          ]),
+                        ),
+                      );
+                      setEditorError("");
+                    }}
+                  />
+                  Ends next day
+                </label>
+                {selectedDates.map((date) => {
+                  const endDate = bulkOvernight
+                    ? DateTime.fromISO(date).plus({ days: 1 }).toISODate()!
+                    : date;
+                  const first = localCandidates(
+                      date,
+                      bulkStart,
+                      context.timezone,
+                    ),
+                    last = localCandidates(endDate, bulkEnd, context.timezone);
+                  if (first.kind === "valid" && last.kind === "valid")
+                    return null;
+                  return (
+                    <div key={date} className="form-stack">
+                      <h3>{dateLabel(date, "long")}</h3>
+                      <Ambiguity
+                        date={date}
+                        time={bulkStart}
+                        zone={context.timezone}
+                        offset={draftOffsets[date]?.start}
+                        onChange={(start) =>
+                          setDraftOffsets((offsets) => ({
+                            ...offsets,
+                            [date]: { ...offsets[date], start },
+                          }))
+                        }
+                      />
+                      <Ambiguity
+                        date={endDate}
+                        time={bulkEnd}
+                        zone={context.timezone}
+                        offset={draftOffsets[date]?.end}
+                        onChange={(end) =>
+                          setDraftOffsets((offsets) => ({
+                            ...offsets,
+                            [date]: { ...offsets[date], end },
+                          }))
+                        }
+                      />
+                    </div>
+                  );
+                })}
+                {editorError && <Notice kind="error">{editorError}</Notice>}
+                <div className="choice-row">
+                  <Button variant="secondary" onClick={applyHours}>
+                    {editingId
+                      ? "Apply changes"
+                      : `Apply to ${selectedDates.length} ${selectedDates.length === 1 ? "date" : "dates"}`}
+                  </Button>
+                  <Button variant="quiet" onClick={discardEditor}>
+                    Discard changes
+                  </Button>
+                </div>
+              </div>
+            )}
             {windows.length > 0 && (
-              <div className="saved-windows">
+              <div
+                className="saved-windows"
+                role="group"
+                aria-label="Saved availability"
+              >
                 <h3>Your available windows</h3>
                 {windows.map((row, index) => (
-                  <div className="window-row" key={row.id}>
-                    <div className="window-title">
+                  <div className="availability-summary" key={row.id}>
+                    <div>
                       <strong>{dateLabel(row.date, "long")}</strong>
+                      <p>
+                        {DateTime.fromISO(`${row.date}T${row.start}`, {
+                          zone: context.timezone,
+                        }).toFormat("h:mm a")}
+                        –
+                        {DateTime.fromISO(`${row.date}T${row.end}`, {
+                          zone: context.timezone,
+                        }).toFormat("h:mm a")}
+                        {row.overnight ? " (next day)" : ""}
+                      </p>
+                    </div>
+                    <div className="availability-summary-actions">
                       <button
                         type="button"
+                        className="text-button"
+                        aria-label={`Edit window ${index + 1}`}
+                        disabled={hasDraft}
+                        onClick={() => editWindow(row)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="text-button"
                         aria-label={`Remove window ${index + 1}`}
-                        className="icon-button small-icon"
+                        disabled={hasDraft}
                         onClick={() =>
                           setWindows((items) =>
                             items.filter((item) => item.id !== row.id),
                           )
                         }
                       >
-                        <Icon name="close" size={16} />
+                        Remove
                       </button>
                     </div>
-                    <div className="field-pair">
-                      <Field label="From">
-                        <input
-                          aria-label={`Window ${index + 1} from`}
-                          type="time"
-                          value={row.start}
-                          onChange={(e) =>
-                            editRow(row.id, {
-                              start: e.target.value,
-                              startOffset: undefined,
-                            })
-                          }
-                        />
-                      </Field>
-                      <Field label="Until">
-                        <input
-                          aria-label={`Window ${index + 1} until`}
-                          type="time"
-                          value={row.end}
-                          onChange={(e) =>
-                            editRow(row.id, {
-                              end: e.target.value,
-                              endOffset: undefined,
-                            })
-                          }
-                        />
-                      </Field>
-                    </div>
-                    <label className="check-label small">
-                      <input
-                        type="checkbox"
-                        checked={row.overnight}
-                        onChange={(e) =>
-                          editRow(row.id, {
-                            overnight: e.target.checked,
-                            endOffset: undefined,
-                          })
-                        }
-                      />
-                      Ends next day
-                    </label>
-                    <Ambiguity
-                      date={row.date}
-                      time={row.start}
-                      zone={context.timezone}
-                      offset={row.startOffset}
-                      onChange={(startOffset) =>
-                        editRow(row.id, { startOffset })
-                      }
-                    />
-                    <Ambiguity
-                      date={
-                        row.overnight
-                          ? DateTime.fromISO(row.date)
-                              .plus({ days: 1 })
-                              .toISODate()!
-                          : row.date
-                      }
-                      time={row.end}
-                      zone={context.timezone}
-                      offset={row.endOffset}
-                      onChange={(endOffset) => editRow(row.id, { endOffset })}
-                    />
                   </div>
                 ))}
               </div>

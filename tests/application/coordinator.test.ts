@@ -592,3 +592,32 @@ it("CAL-01 PRIV-02 stop clears obsolete calendar checks while preserving manual 
     pendingOnboard: null,
   });
 });
+
+it("CANCEL-01 cancellation survives privacy opt-out and legacy status/export cannot revive planning", async () => {
+  const state = base();
+  state.dinner.status = "cancelled";
+  state.dinner.activeVersion = null;
+  state.dinner.confirmations = {};
+  state.dinner.cancellation = { at: now, by: "1" };
+  const tx = fakeTx(state);
+  tx.record.endedAt = new Date(now);
+  const coordinator = new Coordinator(config, undefined, () => now);
+  await send(coordinator, tx, "2", "/stop");
+  expect(tx.state.dinner.status).toBe("cancelled");
+  expect(tx.record.endedAt).toEqual(new Date(now));
+  expect(
+    tx.out.some((work) =>
+      work.payload.text?.includes(
+        "A required participant withdrew participation",
+      ),
+    ),
+  ).toBe(false);
+  await send(coordinator, tx, "1", "/status");
+  expect(tx.out.at(-1).payload.text).toContain("Dinner cancelled");
+  expect(tx.out.at(-1).payload.notification).toBe("dinner-cancelled");
+  await send(coordinator, tx, "1", "/export");
+  expect(tx.out.some((work) => work.payload.document)).toBe(false);
+  const count = tx.out.length;
+  await coordinator.scheduleResearch(tx, tx.record, "after-cancel");
+  expect(tx.out).toHaveLength(count);
+});

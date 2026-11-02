@@ -1,9 +1,16 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 export default defineConfig({
   testDir: "./browser",
   testMatch: "**/*.pw.ts",
   fullyParallel: true,
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    {
+      name: "iphone-webkit",
+      use: { ...devices["iPhone 15"], browserName: "webkit" },
+    },
+  ],
   use: {
     baseURL: "http://127.0.0.1:4173",
     viewport: { width: 390, height: 844 },

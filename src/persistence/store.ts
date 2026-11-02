@@ -98,6 +98,24 @@ export class DinnerTx {
     );
     return result.rowCount === 1;
   }
+  async cancelDinnerWork(id: string): Promise<void> {
+    await this.client.query(
+      "UPDATE user_sessions SET pending_onboard=NULL,updated_at=now() WHERE pending_onboard->>'dinnerId'=$1",
+      [id],
+    );
+    await this.client.query(
+      "DELETE FROM calendar_connections WHERE dinner_id=$1",
+      [id],
+    );
+    await this.client.query("DELETE FROM invitations WHERE dinner_id=$1", [id]);
+    await this.client.query("DELETE FROM oauth_states WHERE dinner_id=$1", [
+      id,
+    ]);
+    await this.client.query(
+      "UPDATE outbox SET status=CASE WHEN kind='message' AND status='sending' THEN 'ambiguous' ELSE 'suppressed' END,payload='{}'::jsonb,completed_at=now(),lease_owner=NULL,lease_until=NULL WHERE dinner_id=$1 AND status IN ('pending','sending')",
+      [id],
+    );
+  }
   async deleteDinner(id: string): Promise<void> {
     await this.client.query("DELETE FROM dinners WHERE id=$1", [id]);
   }

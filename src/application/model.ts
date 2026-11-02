@@ -75,6 +75,8 @@ export function progress(s: AppDinner): string {
 }
 /** Shared projection intentionally has no private constraints, reasons or model drafts. */
 export function sharedPlan(s: AppDinner, now: string): string {
+  if (s.dinner.status === "cancelled")
+    return "Dinner cancelled. Planning and reminders have stopped. Update any reservation or downloaded calendar event yourself.";
   const d = s.dinner,
     proposal = d.proposals.find((p) => p.version === d.activeVersion);
   if (!proposal)

@@ -27,6 +27,8 @@ const messages: Record<string, string> = {
     "A planning limit has been reached. Please wait before trying again or check with the organizer.",
   MEMBERSHIP:
     "Your dinner membership or consent needs attention. Reopen your invitation or check with the organizer.",
+  CANCELLED:
+    "This dinner is cancelled. Planning has stopped and it cannot be reopened.",
   ENDED: "This dinner has already begun and its plan can no longer be changed.",
   STALE:
     "This dinner changed while you were editing. Your answers are still here. Return to the dinner, review the update, then edit again.",

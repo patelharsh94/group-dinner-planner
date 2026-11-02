@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createDinner,
+  cancelDinner,
   approveMember,
   updateConstraints,
   updateSetup,
@@ -116,6 +117,34 @@ const venue: Venue = {
   },
 };
 describe("dinner aggregate requirements", () => {
+  it("cancels only by organizer before start, preserving history and remaining terminal", () => {
+    let agreed = proposeOptions(
+      { ...ready(), venues: [venue] },
+      "a",
+      [option],
+      now,
+    );
+    for (const user of ["a", "b", "c"])
+      agreed = confirmVersion(agreed, user, agreed.activeVersion!, now);
+    const cancelled = cancelDinner(agreed, "a", now);
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.cancellation).toEqual({ at: now, by: "a" });
+    expect(cancelled.activeVersion).toBeNull();
+    expect(cancelled.confirmations).toEqual({});
+    expect(cancelled.proposals).toEqual(agreed.proposals);
+    expect(cancelDinner(cancelled, "a", "2026-11-20T15:00:00Z")).toBe(
+      cancelled,
+    );
+    expect(() => cancelDinner(agreed, "b", now)).toThrow();
+    expect(() =>
+      cancelDinner(agreed, "a", "2026-11-03T20:00:00-06:00"),
+    ).toThrow();
+    expect(() =>
+      updateConstraints(cancelled, "a", { preferences: ["late edit"] }, now),
+    ).toThrow();
+    expect(() => exportIcs(cancelled, now)).toThrow();
+  });
+
   it("DIET-01 a participant staff affirmation resolves their own allergy gap while contradictory evidence still blocks", () => {
     let d = { ...ready(), venues: [structuredClone(venue)] };
     d = updateConstraints(

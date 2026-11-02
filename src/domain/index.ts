@@ -296,7 +296,14 @@ export const DinnerSchema = z.object({
   confirmations: z.record(z.string(), z.number().int()),
   disputes: z.array(DisputeSchema),
   staffReports: z.array(StaffReportSchema),
-  status: z.enum(["collecting", "proposed", "agreed", "escalated"]),
+  status: z.enum([
+    "collecting",
+    "proposed",
+    "agreed",
+    "escalated",
+    "cancelled",
+  ]),
+  cancellation: z.object({ at: iso, by: z.string().min(1) }).optional(),
   createdAt: iso,
 });
 export type Dinner = z.infer<typeof DinnerSchema>;
@@ -354,6 +361,7 @@ function organizer(d: Dinner, id: string) {
 }
 function editable(d: Dinner, now: string) {
   iso.parse(now);
+  if (d.status === "cancelled") fail("CANCELLED", "This dinner was cancelled");
   const p = d.activeVersion !== null ? active(d) : d.proposals.at(-1);
   if (p && Date.parse(now) >= Date.parse(p.options[p.selectedIndex]!.start))
     fail("STARTED", "Dinner has begun");
@@ -365,6 +373,20 @@ function invalidate(d: Dinner): Dinner {
     activeVersion: null,
     confirmations: {},
     status: "collecting",
+  };
+}
+export function cancelDinner(d: Dinner, actor: string, now: string): Dinner {
+  organizer(d, actor);
+  iso.parse(now);
+  if (d.status === "cancelled") return d;
+  editable(d, now);
+  return {
+    ...d,
+    status: "cancelled",
+    cancellation: { at: now, by: actor },
+    activeVersion: null,
+    confirmations: {},
+    revision: d.revision + 1,
   };
 }
 export function approveMember(
@@ -576,6 +598,7 @@ export function setReminderConsent(
   optIn: boolean,
 ): Dinner {
   member(d, id);
+  if (d.status === "cancelled") fail("CANCELLED", "This dinner was cancelled");
   return {
     ...d,
     revision: d.revision + 1,
@@ -952,6 +975,8 @@ export function reminderEligibility(
   allowed: boolean;
   reason: string;
 } {
+  if (d.status === "cancelled")
+    return { allowed: false, reason: "Dinner cancelled" };
   const m = member(d, id);
   const local = DateTime.fromISO(iso.parse(now)).setZone(d.setup.timezone);
   const latest = d.activeVersion !== null ? active(d) : d.proposals.at(-1);

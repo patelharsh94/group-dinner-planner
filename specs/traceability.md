@@ -18,3 +18,6 @@ Canonical IDs in SPEC.md map to executable Vitest scenarios below. Domain scenar
 
 - **UI-01 / UI-02:** coordinator planner-entry tests; `web/src` form/time tests; browser mobile form scenarios.
 - **UI-03 / UI-04 / UI-05 / UI-06:** `tests/miniapp` signed auth tests and `tests/persistence/miniapp.test.ts` private staging, approval, independent forms, deduplication and two-person replanning. Research fingerprint checks in `tests/application/research-version.test.ts`; legacy four-person conversation verifies compatibility.
+
+- **UI-07 / UI-08:** `web/tests/brand.test.tsx`, frontend follow-up editor/budget scenarios and `web/browser/layout.pw.ts` exercise branding, native control containment, mobile stacking and availability editing. Browser scenarios run in Chromium and iPhone WebKit.
+- **CANCEL-01:** domain cancellation scenarios; `tests/persistence/miniapp.test.ts` terminal lifecycle, privacy cleanup, notification deduplication and racing provider/confirmation; worker/coordinator cancellation scenarios protect delivery, legacy commands and privacy opt-out; frontend cancellation confirmation and read-only views.

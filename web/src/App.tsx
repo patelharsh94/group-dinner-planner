@@ -121,10 +121,20 @@ export function App() {
   const [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const [settings, setSettings] = useState(false),
-    [danger, setDanger] = useState<"stop" | "delete" | null>(null);
+    [danger, setDanger] = useState<"stop" | "delete" | "cancelDinner" | null>(
+      null,
+    );
   const epoch = useRef(0),
     activeDinner = useRef<string | undefined>(undefined);
   const invite = useRef(invitationToken()).current;
+  useEffect(() => {
+    if (dinner?.status !== "cancelled") return;
+    setScreen("dashboard");
+    setResponse(undefined);
+    setSharedDraft(undefined);
+    setSettings(false);
+    setDanger(null);
+  }, [dinner?.status]);
   useEffect(() => {
     if (!telegram) return;
     telegram.ready();
@@ -481,13 +491,22 @@ export function App() {
                   <Notice kind={danger === "delete" ? "error" : "info"}>
                     {danger === "delete"
                       ? "Delete all your Muse data, across every dinner? Any dinners you organize will also be deleted. This cannot be undone."
-                      : "Stop dinner coordination? Muse will stop planning messages for you. You can explicitly resume later."}
+                      : danger === "cancelDinner"
+                        ? "Cancel this dinner for everyone? Planning and reminders will stop, and this dinner cannot be reopened. Any reservation or exported calendar event must be cancelled manually."
+                        : "Stop dinner coordination? Muse will stop planning messages for you. You can explicitly resume later."}
                   </Notice>
                   <Button
                     variant="danger"
                     busy={busy}
                     onClick={async () => {
-                      if (await dinnerAction(danger)) {
+                      if (
+                        await dinnerAction(
+                          danger,
+                          danger === "cancelDinner"
+                            ? { confirmed: true }
+                            : undefined,
+                        )
+                      ) {
                         setDanger(null);
                         setSettings(false);
                       }
@@ -495,122 +514,155 @@ export function App() {
                   >
                     {danger === "delete"
                       ? "Delete all my Muse data"
-                      : "Stop coordination"}
+                      : danger === "cancelDinner"
+                        ? "Yes, cancel this dinner"
+                        : "Stop coordination"}
                   </Button>
                   <Button variant="quiet" onClick={() => setDanger(null)}>
-                    Keep my place
+                    {danger === "cancelDinner"
+                      ? "Keep dinner planned"
+                      : "Keep my place"}
                   </Button>
                 </>
               ) : (
                 <>
-                  {dinner.role === "organizer" && !dinner.ended && (
-                    <>
-                      <Button
-                        variant="secondary"
-                        onClick={() => {
-                          setSharedDraft({
-                            setup: dinner.setup,
-                            version: dinner.formVersion,
-                          });
-                          setSettings(false);
-                          setError("");
-                          setScreen("shared");
-                        }}
-                      >
-                        Edit shared dinner details
-                      </Button>
-                      <div className="divider" />
-                    </>
-                  )}
-                  <section className="settings-section">
-                    <div className="section-icon">
-                      <Icon name="calendar" />
-                      <h3>Your calendar</h3>
-                    </div>
-                    <p className="muted small">
-                      Optional. Muse checks busy times; a free calendar is never
-                      treated as a yes.
-                    </p>
-                    {dinner.own.calendar === "not-connected" ? (
-                      <Button
-                        variant="secondary"
-                        busy={busy}
-                        onClick={() => void dinnerAction("calendarConnect")}
-                      >
-                        Connect Google Calendar
-                      </Button>
-                    ) : dinner.own.calendar === "staged" ? (
+                  {dinner.role === "organizer" &&
+                    !dinner.ended &&
+                    dinner.status !== "cancelled" && (
                       <>
-                        <Notice>
-                          Your calendar is authorized. Activate it for this
-                          dinner when you're ready.
-                        </Notice>
                         <Button
-                          busy={busy}
-                          onClick={() => void dinnerAction("calendarActivate")}
+                          variant="secondary"
+                          onClick={() => {
+                            setSharedDraft({
+                              setup: dinner.setup,
+                              version: dinner.formVersion,
+                            });
+                            setSettings(false);
+                            setError("");
+                            setScreen("shared");
+                          }}
                         >
-                          Use calendar for this dinner
+                          Edit shared dinner details
                         </Button>
-                        <Button
-                          variant="quiet"
-                          busy={busy}
-                          onClick={() =>
-                            void dinnerAction("calendarDisconnect")
-                          }
-                        >
-                          Disconnect
-                        </Button>
+                        <div className="divider" />
                       </>
-                    ) : (
-                      <>
-                        <p className="status-badge">
-                          {dinner.own.calendar === "connected"
-                            ? "Connected for this dinner"
-                            : "Calendar needs attention"}
+                    )}
+                  {dinner.status === "cancelled" ? (
+                    <Notice>
+                      This dinner is cancelled. Any restaurant reservation or
+                      calendar event must be cancelled manually. Muse has not
+                      changed those for you.
+                    </Notice>
+                  ) : (
+                    <>
+                      {" "}
+                      <section className="settings-section">
+                        <div className="section-icon">
+                          <Icon name="calendar" />
+                          <h3>Your calendar</h3>
+                        </div>
+                        <p className="muted small">
+                          Optional. Muse checks busy times; a free calendar is
+                          never treated as a yes.
                         </p>
-                        <div className="choice-row">
+                        {dinner.own.calendar === "not-connected" ? (
                           <Button
                             variant="secondary"
                             busy={busy}
-                            onClick={() => void dinnerAction("calendarSync")}
+                            onClick={() => void dinnerAction("calendarConnect")}
                           >
-                            Refresh busy times
+                            Connect Google Calendar
                           </Button>
+                        ) : dinner.own.calendar === "staged" ? (
+                          <>
+                            <Notice>
+                              Your calendar is authorized. Activate it for this
+                              dinner when you're ready.
+                            </Notice>
+                            <Button
+                              busy={busy}
+                              onClick={() =>
+                                void dinnerAction("calendarActivate")
+                              }
+                            >
+                              Use calendar for this dinner
+                            </Button>
+                            <Button
+                              variant="quiet"
+                              busy={busy}
+                              onClick={() =>
+                                void dinnerAction("calendarDisconnect")
+                              }
+                            >
+                              Disconnect
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <p className="status-badge">
+                              {dinner.own.calendar === "connected"
+                                ? "Connected for this dinner"
+                                : "Calendar needs attention"}
+                            </p>
+                            <div className="choice-row">
+                              <Button
+                                variant="secondary"
+                                busy={busy}
+                                onClick={() =>
+                                  void dinnerAction("calendarSync")
+                                }
+                              >
+                                Refresh busy times
+                              </Button>
+                              <Button
+                                variant="quiet"
+                                busy={busy}
+                                onClick={() =>
+                                  void dinnerAction("calendarDisconnect")
+                                }
+                              >
+                                Disconnect
+                              </Button>
+                            </div>
+                          </>
+                        )}
+                      </section>
+                      <div className="divider" />
+                      <label className="toggle-label">
+                        <span>
+                          <strong>Gentle reminders</strong>
+                          <small>
+                            At most once a day, outside quiet hours.
+                          </small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={dinner.own.reminders}
+                          disabled={busy}
+                          onChange={(e) =>
+                            void dinnerAction("reminders", {
+                              enabled: e.target.checked,
+                            })
+                          }
+                        />
+                      </label>
+                      <div className="divider" />
+                      <Button variant="quiet" onClick={() => setDanger("stop")}>
+                        Stop coordination for me
+                      </Button>
+                      {dinner.role === "organizer" &&
+                        !dinner.ended &&
+                        dinner.status !== "cancelled" && (
                           <Button
-                            variant="quiet"
-                            busy={busy}
-                            onClick={() =>
-                              void dinnerAction("calendarDisconnect")
-                            }
+                            variant="danger"
+                            onClick={() => setDanger("cancelDinner")}
                           >
-                            Disconnect
+                            Cancel dinner for everyone
                           </Button>
-                        </div>
-                      </>
-                    )}
-                  </section>
-                  <div className="divider" />
-                  <label className="toggle-label">
-                    <span>
-                      <strong>Gentle reminders</strong>
-                      <small>At most once a day, outside quiet hours.</small>
-                    </span>
-                    <input
-                      type="checkbox"
-                      role="switch"
-                      checked={dinner.own.reminders}
-                      disabled={busy}
-                      onChange={(e) =>
-                        void dinnerAction("reminders", {
-                          enabled: e.target.checked,
-                        })
-                      }
-                    />
-                  </label>
-                  <div className="divider" />
-                  <Button variant="quiet" onClick={() => setDanger("stop")}>
-                    Stop coordination for me
-                  </Button>
+                        )}
+                    </>
+                  )}
                   <Button variant="danger" onClick={() => setDanger("delete")}>
                     Delete all my Muse data
                   </Button>
@@ -713,13 +765,15 @@ export function App() {
                     {dateLabel(item.windowStart)}–{dateLabel(item.windowEnd)}
                   </p>
                   <span className="small muted">
-                    {item.role === "pending"
-                      ? "Waiting for approval"
-                      : item.status === "agreed"
-                        ? "Agreed plan"
-                        : item.ended
-                          ? "Dinner has begun"
-                          : "Planning together"}
+                    {item.status === "cancelled"
+                      ? "Cancelled"
+                      : item.role === "pending"
+                        ? "Waiting for approval"
+                        : item.status === "agreed"
+                          ? "Agreed plan"
+                          : item.ended
+                            ? "Dinner has begun"
+                            : "Planning together"}
                   </span>
                 </div>
                 <Icon name="chevron" />

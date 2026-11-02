@@ -32,4 +32,14 @@ The planner now uses React forms served by the existing Fastify service, with sh
 - `npm audit` reported zero vulnerabilities; whitespace checks passed.
 - Full Docker image build could not run because the local Docker daemon was stopped. The same Node 22 TypeScript/Vite build steps and container startup-order regression tests passed.
 
-This change has not been deployed to Render or registered as the live bot menu. Real Telegram WebView behavior, Google authorization, provider research and a consenting two-person trial remain live checks after rollout. No live-feature scope was reduced.
+At the time of the local checks above, this change had not yet been deployed to Render or registered as the live bot menu. The subsequent `8865107` deployment succeeded and its Telegram menu/webhook were verified. Real Telegram WebView behavior, Google authorization, provider research and a consenting two-person trial remain live checks after rollout. No live-feature scope was reduced.
+
+## iPhone usability and cancellation — 2026-11-02
+
+- TypeScript checks and the production server/frontend builds passed.
+- 101 core tests, 22 frontend tests and 40 real PostgreSQL tests passed. Cancellation coverage includes consent/organizer authorization, duplicate requests, seven-day retention, pending-answer and legacy-stage cleanup, private views, replacement dinner creation, and racing leased research/confirmation without resurrection.
+- 16 browser scenarios passed against the production bundle served by Fastify, across Chromium and iPhone WebKit. Layout checks cover creation, shared details and availability at 393px and 320px widths; controls stack and remain inside their containers. CI now installs both engines.
+- Mobile light/dark availability and cancellation screenshots were inspected. Branding, per-person budget wording, single-editor apply/edit/remove behavior and irreversible cancellation confirmation were verified.
+- Independent review found two medium issues; regressions now cover dinner-timezone summary formatting during a browser-only DST gap and removal of legacy pending private stages scoped to the cancelled dinner.
+- Cancellation is a terminal JSON state using the existing `ended_at`; no database migration is required. Existing dinner and proposal data remains compatible with the updated service.
+- No live participant dinner was cancelled during automated verification. Actual iPhone Telegram WebView feedback remains a user trial after deployment.

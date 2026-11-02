@@ -7,6 +7,7 @@ import {
   DomainError,
   approveMember,
   confirmVersion,
+  cancelDinner,
   createDinner,
   exportIcs,
   raiseDispute,
@@ -47,6 +48,7 @@ import { stableHash } from "./hash.js";
 import { formVersion, invitation, project, summary } from "./view.js";
 const uid = () => randomBytes(12).toString("hex");
 const actions = [
+  "cancelDinner",
   "create",
   "join",
   "approve",
@@ -514,6 +516,48 @@ export class MiniAppService {
     }
     let record = await this.record(tx, input.dinnerId),
       s = AppDinnerSchema.parse(record.state);
+    if (input.action === "cancelDinner") {
+      z.object({ confirmed: z.literal(true) })
+        .strict()
+        .parse(payload);
+      requireOwner(s, user);
+      if (s.dinner.status === "cancelled")
+        return { ok: true, dinner: await project(tx, record, user, now) };
+      if (record.endedAt)
+        throw new MiniAppFault("ENDED", 409, "This dinner has ended.");
+      s.dinner = cancelDinner(s.dinner, user, now);
+      for (const request of Object.values(s.joinRequests))
+        delete request.preferences;
+      record = await this.coordinator.save(
+        tx,
+        { ...record, endedAt: new Date(now) },
+        s,
+      );
+      await tx.cancelDinnerWork(record.id);
+      const recipients = new Set([
+        ...s.dinner.members.filter((m) => authorized(s, m.id)).map((m) => m.id),
+        ...Object.keys(s.joinRequests).filter((id) => s.consents[id]?.active),
+      ]);
+      for (const target of recipients)
+        await this.coordinator.message(
+          tx,
+          event,
+          target,
+          "This dinner was cancelled by its organizer. Existing reservations are unchanged.",
+          {
+            dinnerId: record.id,
+            notification: "dinner-cancelled",
+            key: `dinner-cancelled:${record.id}:${target}`,
+            buttons: this.coordinator.plannerButtons({ dinner: record.id }),
+          },
+        );
+      return { ok: true, dinner: await project(tx, record, user, now) };
+    }
+    if (
+      s.dinner.status === "cancelled" &&
+      input.action !== "calendarDisconnect"
+    )
+      throw new MiniAppFault("CANCELLED", 409, "This dinner was cancelled.");
     if (input.action === "resume") {
       z.object({ consent: z.literal(true) })
         .strict()

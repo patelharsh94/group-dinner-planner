@@ -60,6 +60,7 @@ export function summary(
             ? "pending"
             : "withdrawn",
     ended: !!record.endedAt,
+    ...(d.cancellation ? { cancellation: d.cancellation } : {}),
   };
 }
 export function invitation(
@@ -125,9 +126,12 @@ export async function project(
     formVersion: formVersion(s, user),
     researchPending: full && work.rows[0].pending,
     setup: structuredClone(publicSetup(s)),
-    sharedPlan: full
-      ? sharedPlan(s, now)
-      : "Your response is waiting for organizer approval.",
+    sharedPlan:
+      d.status === "cancelled"
+        ? "This dinner was cancelled by its organizer. Existing reservations are unchanged."
+        : full
+          ? sharedPlan(s, now)
+          : "Your response is waiting for organizer approval.",
     activeVersion: full ? d.activeVersion : null,
     members: full
       ? d.members.map((m) => ({

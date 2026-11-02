@@ -130,8 +130,8 @@ test("synthetic host: create, save own answers, invite, approve and confirm a pl
   await page.goto("/app/");
   await page.getByRole("button", { name: /Start a dinner/ }).click();
   await page.getByLabel("Where are we meeting?").fill("Chicago");
-  await page.getByLabel("From date").fill("2026-11-10");
-  await page.getByLabel("Through date").fill("2026-11-12");
+  await page.getByLabel("Earliest date").fill("2026-11-10");
+  await page.getByLabel("Latest date").fill("2026-11-12");
   await page.getByRole("checkbox", { name: /I agree to Muse/ }).check();
   await page.getByRole("button", { name: /Create dinner/ }).click();
   await expect(
@@ -140,7 +140,7 @@ test("synthetic host: create, save own answers, invite, approve and confirm a pl
   await expect(page.locator(".date-cell[aria-pressed=true]")).toHaveCount(0);
   await page.getByRole("button", { name: "Tuesday, November 10" }).click();
   await page.getByRole("button", { name: "Wednesday, November 11" }).click();
-  await page.getByRole("button", { name: "Add hours to 2 dates" }).click();
+  await page.getByRole("button", { name: "Apply to 2 dates" }).click();
   await page.getByRole("button", { name: /No requirements/ }).click();
   await page.getByRole("button", { name: /Save my answers/ }).click();
   await page.getByRole("button", { name: "Share invitation" }).click();
@@ -217,7 +217,7 @@ test("synthetic guest: one consent save, pending approval, no organizer controls
   await page.goto("/app/?invite=TEST-ONLY-invite");
   await page.getByRole("button", { name: /Add my answers/ }).click();
   await page.getByRole("button", { name: "Tuesday, November 10" }).click();
-  await page.getByRole("button", { name: "Add hours to 1 date" }).click();
+  await page.getByRole("button", { name: "Apply to 1 date" }).click();
   await page.getByRole("button", { name: /I have requirements/ }).click();
   await page.getByRole("button", { name: "Vegan", exact: true }).click();
   await page.getByRole("checkbox", { name: /I agree to Muse/ }).check();
@@ -240,7 +240,9 @@ test("synthetic guest: one consent save, pending approval, no organizer controls
   await page
     .getByRole("button", { name: "Edit my answers", exact: true })
     .click();
-  await page.getByLabel("Window 1 from").fill("18:30");
+  await page.getByRole("button", { name: "Edit window 1" }).click();
+  await page.getByLabel("I'm free from").fill("18:30");
+  await page.getByRole("button", { name: "Apply changes" }).click();
   await page.getByRole("button", { name: /Save my answers/ }).click();
   await expect(
     page.getByRole("heading", { name: "The organizer will let you in." }),
@@ -288,10 +290,10 @@ test("synthetic owner: shared detail edits keep the original form version throug
   await page
     .getByRole("button", { name: "Edit shared dinner details" })
     .click();
-  await page.getByLabel("Group budget amount").fill("60");
+  await page.getByLabel("Budget per person").fill("60");
   dinner = { ...dinner, formVersion: "newer-server-form" };
   await page.clock.fastForward(5500);
-  await expect(page.getByLabel("Group budget amount")).toHaveValue("60");
+  await expect(page.getByLabel("Budget per person")).toHaveValue("60");
   await page.getByRole("button", { name: /Save shared details/ }).click();
   await expect.poll(() => actions.length).toBe(1);
   expect(actions[0]).toMatchObject({
@@ -352,4 +354,73 @@ test("outside Telegram fetches public config only and exposes no dinner data", a
     page.getByRole("link", { name: /Open Muse in Telegram/ }),
   ).toHaveAttribute("href", "https://t.me/TestMuseBot");
   expect(privateRequests).toEqual([]);
+});
+
+test("synthetic organizer cancellation is explicit and terminal, with manual cleanup guidance", async ({
+  page,
+}) => {
+  await telegramFixture(page);
+  let dinner = dinnerFixture();
+  const actions: MutationEnvelope[] = [];
+  await page.route("**/api/miniapp/bootstrap*", (route) =>
+    route.fulfill({
+      json: bootstrapFixture({ currentDinnerId: dinner.id, dinners: [dinner] }),
+    }),
+  );
+  await page.route("**/api/miniapp/dinners/test-dinner", (route) =>
+    route.fulfill({ json: dinner }),
+  );
+  await page.route("**/api/miniapp/actions", async (route) => {
+    const action = route.request().postDataJSON() as MutationEnvelope;
+    actions.push(action);
+    expect(action).toMatchObject({
+      action: "cancelDinner",
+      payload: { confirmed: true },
+    });
+    dinner = {
+      ...dinner,
+      status: "cancelled",
+      ended: true,
+      own: { ...dinner.own, calendar: "staged" },
+      cancellation: { at: "2026-11-01T18:00:00Z", by: "test-owner" },
+    };
+    await route.fulfill({ json: { ok: true, dinner } });
+  });
+  await page.goto("/app/");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Cancel dinner for everyone" })
+    .click();
+  expect(actions).toHaveLength(0);
+  await expect(
+    page.getByText(/Cancel this dinner for everyone\?/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Keep dinner planned" }).click();
+  expect(actions).toHaveLength(0);
+  await page
+    .getByRole("button", { name: "Cancel dinner for everyone" })
+    .click();
+  await page.getByRole("button", { name: "Yes, cancel this dinner" }).click();
+  await expect(
+    page.getByRole("heading", { name: "This dinner is cancelled." }),
+  ).toBeVisible();
+  expect(actions).toHaveLength(1);
+  await expect(
+    page.getByText(/reservation or calendar event must be cancelled manually/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Edit shared dinner details" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Use calendar for this dinner" }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Close Your dinner settings" })
+    .click();
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(page.getByText("Cancelled", { exact: true })).toBeVisible();
+  await expect(page.getByText("Dinner has begun", { exact: true })).toHaveCount(
+    0,
+  );
 });

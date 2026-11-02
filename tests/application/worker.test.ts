@@ -289,3 +289,106 @@ it("CON-01 research carries anonymous flexible preferences without converting th
   );
   expect(JSON.stringify(context)).not.toContain("1001");
 });
+
+it("CANCEL-01 suppresses old background messages and permits only cancellation notices after cancellation", async () => {
+  const state = dinnerState();
+  state.dinner.status = "cancelled";
+  state.dinner.activeVersion = null;
+  state.dinner.confirmations = {};
+  state.consents["1004"] = { active: true, at: now, version: "1.0" };
+  state.joinRequests["1004"] = { name: "Pending guest", slot: null, at: now };
+  const record = {
+    id: "d1",
+    organizerId: "1001",
+    revision: 1,
+    state,
+    endedAt: new Date(now),
+  };
+  const sent: any[] = [],
+    suppressed: string[] = [];
+  const store: any = {
+    transaction: async (fn: any) => fn({ getDinner: async () => record }),
+    markSent: async () => {},
+    markSuppressed: async (id: string) => suppressed.push(id),
+  };
+  const worker = new Worker(
+    store,
+    new Coordinator({} as any, undefined, () => now),
+    { send: async (payload: any) => sent.push(payload) } as any,
+  );
+  const work = (id: string, chatId: string, notification?: string) =>
+    ({
+      id,
+      kind: "message",
+      attempts: 1,
+      payload: {
+        chatId,
+        dinnerId: "d1",
+        text: "Dinner update",
+        ...(notification ? { notification } : {}),
+      },
+    }) as any;
+  await worker.send(work("old", "1001"));
+  await worker.send(work("cancel-owner", "1001", "dinner-cancelled"));
+  await worker.send(work("cancel-pending", "1004", "dinner-cancelled"));
+  state.consents["1004"].active = false;
+  await worker.send(work("cancel-withdrawn", "1004", "dinner-cancelled"));
+  expect(sent.map((payload) => payload.chatId)).toEqual(["1001", "1004"]);
+  expect(suppressed).toEqual(["old", "cancel-withdrawn"]);
+});
+
+it("CANCEL-01 discards an in-flight research result after cancellation without saving or sending a blocker", async () => {
+  const state = dinnerState(),
+    record = {
+      id: "d1",
+      organizerId: "1001",
+      revision: 0,
+      state,
+      endedAt: null as Date | null,
+    };
+  let finish!: (result: any) => void,
+    requested = false,
+    saves = 0,
+    messages = 0;
+  const tx = { getDinner: async () => record };
+  const store: any = {
+    readDinner: async () => structuredClone(record),
+    processWork: async (_id: string, _worker: string, fn: any) => fn(tx),
+  };
+  const coordinator = new Coordinator(
+    { PUBLIC_URL: "https://planner.example" } as any,
+    undefined,
+    () => now,
+  );
+  coordinator.save = async () => {
+    saves++;
+    throw new Error("Cancelled work must never save");
+  };
+  coordinator.message = async () => {
+    messages++;
+  };
+  const muse: any = {
+    research: () => {
+      requested = true;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+  };
+  const worker = new Worker(store, coordinator, {} as any, muse);
+  const running = worker.runJob({
+    id: "research-before-cancel",
+    kind: "research",
+    attempts: 1,
+    payload: { dinnerId: "d1", userId: "1001", revision: 0 },
+  } as any);
+  for (let i = 0; i < 10 && !requested; i++) await Promise.resolve();
+  expect(requested).toBe(true);
+  record.revision++;
+  record.endedAt = new Date(now);
+  record.state.dinner.status = "cancelled";
+  finish({ venues: [], options: [], gaps: [] });
+  await running;
+  expect(saves).toBe(0);
+  expect(messages).toBe(0);
+});

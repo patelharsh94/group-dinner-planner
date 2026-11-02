@@ -21,6 +21,7 @@ export interface CreateDinnerInput {
   consent: true;
 }
 export type MiniAppActionName =
+  | "cancelDinner"
   | "create"
   | "join"
   | "approve"
@@ -57,6 +58,7 @@ export interface DinnerSummary {
   status: string;
   role: "organizer" | "member" | "pending" | "withdrawn";
   ended: boolean;
+  cancellation?: { at: string; by: string };
 }
 export interface InvitationView {
   formVersion: string;

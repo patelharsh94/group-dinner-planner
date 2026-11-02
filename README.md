@@ -1,6 +1,6 @@
 # Group Dinner Planner
 
-A Telegram dinner coordinator powered by Muse. An organizer delegates dinner planning, the bot gathers input from friends in private chats, and the organizer receives meaningful progress updates and decisions requiring their attention.
+Dinner Planner is a Telegram dinner coordinator powered by Muse. An organizer delegates dinner planning, the bot gathers input from friends in private chats, and the organizer receives meaningful progress updates and decisions requiring their attention.
 
 ## Status
 
@@ -45,11 +45,13 @@ See [integration setup and release gates](docs/INTEGRATIONS.md) for Google conse
 ## Private Telegram workflow
 
 1. Send `/start` or `/new`, then tap **Open planner**. Set the city, optional area, dates, party size (2–6) and per-person budget in one form. Timezone, currency and duration are visible editable settings owned by the organizer.
-2. Pick your own willing dates and hours, and choose no food requirements or enter yours. Optional advanced settings cover personal budget, travel and preferences. No willing dates are preselected.
+2. Pick your own willing dates, apply your available hours with one editor, and choose no food requirements or enter yours. Saved time ranges have Edit and Remove controls. Optional advanced settings cover personal budget, travel and preferences. No willing dates are preselected.
 3. Share the dinner-specific invitation. Guests start the bot, open their private form, consent and submit once. The organizer approves their Telegram name; pending private responses stay out of planning until then.
 4. Review up to two researched options in the dashboard. The organizer can choose the alternative. Each required attendee explicitly confirms the current feasible version. Missing or contradictory firm evidence blocks agreement.
 5. Use **Request a change** and edit your response when needed. Material revisions clear confirmations. Two revised rounds per open disagreement are allowed before organizer escalation. Allergy accommodation requires the affected person's explicit staff confirmation.
 6. After agreement, download the calendar file and use the reservation handoff. The bot never books, writes calendars or changes existing reservations.
+
+The organizer can **Cancel dinner** in settings after reviewing a confirmation. This ends that dinner for everyone, stops planning and reminders, and allows a new dinner. Cancelled dinners remain read-only for seven days; existing reservations and downloaded calendar events need manual cleanup. **Stop coordination for me** remains a separate personal opt-out.
 
 Calendar free/busy is optional; connect and activate it under settings. Manual availability works throughout. Reminders require opt-in. Privacy, stop and deletion are available in the app and via `/privacy`, `/stop`, `/delete`. Existing commands and in-progress chat setup drafts continue to work. `/help` opens the planner.
 
@@ -62,7 +64,7 @@ npm run typecheck
 npm test
 npm run test:db:embedded
 npm run build
-npx playwright install chromium
+npx playwright install chromium webkit
 npm run test:browser
 npm audit
 ```

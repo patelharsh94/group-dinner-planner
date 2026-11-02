@@ -16,10 +16,17 @@ export function Icon({
     | "share"
     | "leaf"
     | "clock"
-    | "chevron";
+    | "chevron"
+    | "dinner";
   size?: number;
 }) {
   const paths = {
+    dinner: (
+      <>
+        <circle cx="12" cy="12" r="5" />
+        <path d="M3 3v6m3-6v6M3 6h3M4.5 9v12M21 3v18m0-18c-3 2-3 7 0 8" />
+      </>
+    ),
     arrow: (
       <>
         <path d="M5 12h14M13 6l6 6-6 6" />
@@ -216,13 +223,14 @@ export function Brand({
           </button>
         ) : (
           <span className="brand-mark" aria-hidden="true">
-            m
+            <Icon name="dinner" size={24} />
           </span>
         )}
       </div>
-      <span className="wordmark">
-        muse<span className="brand-dot">.</span>
-      </span>
+      <div className="brand-lockup">
+        <span className="wordmark">Dinner Planner</span>
+        <span className="brand-subtitle">Powered by Muse</span>
+      </div>
       <div className="header-side">
         {settings && (
           <button

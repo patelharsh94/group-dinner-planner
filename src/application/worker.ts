@@ -133,9 +133,21 @@ export class Worker {
       // Replies follow an authenticated inbound request. Background dinner messages need live membership.
       if (!payload.dinnerId) return payload.reply === true;
       const record = await tx.getDinner<AppDinner>(payload.dinnerId);
+      if (!record) return false;
+      const state = AppDinnerSchema.parse(record.state);
+      if (state.dinner.status === "cancelled") {
+        return (
+          payload.notification === "dinner-cancelled" &&
+          !!state.consents[payload.chatId]?.active &&
+          (state.dinner.members.some(
+            (member) => member.id === payload.chatId,
+          ) ||
+            !!state.joinRequests[payload.chatId])
+        );
+      }
       if (
-        !record ||
-        !authorized(AppDinnerSchema.parse(record.state), payload.chatId)
+        payload.notification === "dinner-cancelled" ||
+        !authorized(state, payload.chatId)
       )
         return false;
       if (
@@ -192,7 +204,12 @@ export class Worker {
   ): Promise<void> {
     await this.store.transaction(async (tx) => {
       const record = await tx.getDinner<AppDinner>(dinnerId);
-      if (!record) return;
+      if (
+        !record ||
+        record.endedAt ||
+        record.state.dinner.status === "cancelled"
+      )
+        return;
       await this.coordinator.message(
         tx,
         eventId,
@@ -442,7 +459,13 @@ export class Worker {
     } catch {
       await this.store.processWork(work.id, this.workerId, async (tx) => {
         const current = await tx.getDinner<AppDinner>(record.id);
-        if (!current || !authorized(current.state, job.userId)) return;
+        if (
+          !current ||
+          current.endedAt ||
+          current.state.dinner.status === "cancelled" ||
+          !authorized(current.state, job.userId)
+        )
+          return;
         if (work.kind === "calendar" && current.revision === record.revision) {
           await tx.disconnectCalendar(record.id, job.userId);
           const s = structuredClone(current.state);
@@ -476,7 +499,13 @@ export class Worker {
   ): Promise<void> {
     await this.store.processWork(work.id, this.workerId, async (tx) => {
       const current = await tx.getDinner<AppDinner>(record.id);
-      if (!current || !authorized(current.state, user)) return;
+      if (
+        !current ||
+        current.endedAt ||
+        current.state.dinner.status === "cancelled" ||
+        !authorized(current.state, user)
+      )
+        return;
       if (
         current.revision !== record.revision &&
         !(

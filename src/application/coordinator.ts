@@ -103,6 +103,7 @@ export class Coordinator {
       reminderDay?: string;
       key?: string;
       relatedUserIds?: string[];
+      notification?: "dinner-cancelled";
     } = {},
   ): Promise<void> {
     if (eventId.startsWith("miniapp:") && options.reply && !options.document)
@@ -495,7 +496,13 @@ export class Coordinator {
         dinnerId: record.id,
         reply: true,
         version: d.activeVersion ?? undefined,
-        buttons: proposalButtons(d),
+        buttons:
+          d.status === "cancelled"
+            ? this.plannerButtons({ dinner: record.id })
+            : proposalButtons(d),
+        ...(d.status === "cancelled"
+          ? { notification: "dinner-cancelled" as const }
+          : {}),
       });
       return;
     }
@@ -1255,7 +1262,13 @@ export class Coordinator {
     eventId: string,
   ): Promise<void> {
     const s = record.state;
-    if (!canPlan(s) || s.dinner.status === "escalated") return;
+    if (
+      record.endedAt ||
+      s.dinner.status === "cancelled" ||
+      !canPlan(s) ||
+      s.dinner.status === "escalated"
+    )
+      return;
     if (!candidateSlots(s.dinner, this.now()).length) {
       await this.message(
         tx,
@@ -1422,7 +1435,7 @@ export class Coordinator {
           ...s.dinner,
           activeVersion: null,
           confirmations: {},
-          status: "collecting",
+          status: s.dinner.status === "cancelled" ? "cancelled" : "collecting",
           revision: s.dinner.revision + 1,
           members: s.dinner.members.map((m) =>
             m.id === user ? { ...m, remindersOptIn: false } : m,
@@ -1459,13 +1472,14 @@ export class Coordinator {
         );
       }
       await this.save(tx, record, s);
-      await this.message(
-        tx,
-        eventId,
-        s.dinner.organizerId,
-        "A required participant withdrew participation. Agreement is blocked until you explicitly resolve membership; no attendee was silently removed.",
-        { dinnerId: record.id },
-      );
+      if (s.dinner.status !== "cancelled")
+        await this.message(
+          tx,
+          eventId,
+          s.dinner.organizerId,
+          "A required participant withdrew participation. Agreement is blocked until you explicitly resolve membership; no attendee was silently removed.",
+          { dinnerId: record.id },
+        );
     }
     await tx.deleteUser(user);
     if (!remove) await tx.setSession(user, emptySession());

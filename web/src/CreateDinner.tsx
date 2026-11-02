@@ -36,8 +36,11 @@ export function CreateDinner({
     [end, setEnd] = useState(
       initial?.windowEnd ?? DateTime.now().plus({ days: 14 }).toISODate()!,
     );
+  const legacyTotal = initial?.budget.basis === "total";
   const [partySize, setPartySize] = useState(2),
-    [amount, setAmount] = useState(initial?.budget.amount.toString() ?? "50");
+    [amount, setAmount] = useState(
+      legacyTotal ? "" : (initial?.budget.amount.toString() ?? "50"),
+    );
   const [currency, setCurrency] = useState(initial?.currency ?? "USD"),
     [duration, setDuration] = useState(initial?.durationMinutes ?? 90);
   const [settings, setSettings] = useState(false),
@@ -141,9 +144,9 @@ export function CreateDinner({
               Everyone will pick their own available dates next.
             </p>
             <div className="field-pair">
-              <Field label="From">
+              <Field label="Earliest date">
                 <input
-                  aria-label="From date"
+                  aria-label="Earliest date"
                   type="date"
                   min={today}
                   value={start}
@@ -154,9 +157,9 @@ export function CreateDinner({
                   required
                 />
               </Field>
-              <Field label="Through">
+              <Field label="Latest date">
                 <input
-                  aria-label="Through date"
+                  aria-label="Latest date"
                   type="date"
                   min={start || today}
                   max={
@@ -205,14 +208,21 @@ export function CreateDinner({
                 <div className="divider" />
               </>
             )}
+            {legacyTotal && (
+              <Notice>
+                Your previous budget was {initial!.currency}{" "}
+                {initial!.budget.amount} for the whole table. Enter an explicit
+                per-person amount below. Muse will not convert it automatically.
+              </Notice>
+            )}
             <Field
-              label="Group budget · per person"
-              hint="An estimate for the meal. Muse will keep the price basis visible."
+              label="Budget per person"
+              hint="The maximum estimated meal cost for each person, not the group total."
             >
               <div className="money-input">
                 <span>{currency}</span>
                 <input
-                  aria-label="Group budget amount"
+                  aria-label="Budget per person"
                   inputMode="decimal"
                   type="number"
                   min="0.01"

@@ -38,6 +38,7 @@ export function Dashboard({
   onAction,
   onCalendar,
 }: Props) {
+  const cancelled = d.status === "cancelled";
   const owner = d.role === "organizer",
     pending = d.role === "pending",
     withdrawn = d.role === "withdrawn" || !d.own.consent;
@@ -65,7 +66,13 @@ export function Dashboard({
       <main className="page dashboard">
         <div className="eyebrow">{d.city} · Dinner together</div>
         <h1>
-          {d.status === "agreed" ? (
+          {cancelled ? (
+            <>
+              Plans change.
+              <br />
+              That’s okay.
+            </>
+          ) : d.status === "agreed" ? (
             <>
               A table.
               <br />A plan. Everyone.
@@ -84,9 +91,35 @@ export function Dashboard({
           <span className="pill-dot" />
           {d.setup.durationMinutes} min
         </div>
+        {!cancelled &&
+          (d.setup.budget.basis === "total" ? (
+            <Notice>
+              Previous budget: {d.setup.currency} {d.setup.budget.amount} for
+              the whole table. The organizer needs to enter an explicit
+              per-person budget in shared dinner details.
+            </Notice>
+          ) : (
+            <p className="field-hint">
+              Budget per person: {d.setup.currency} {d.setup.budget.amount}.
+              Maximum estimated meal cost for each person, not the group total.
+            </p>
+          ))}
         {error && <Notice kind="error">{error}</Notice>}
         {notice && <Notice kind="success">{notice}</Notice>}
-        {withdrawn ? (
+        {cancelled ? (
+          <section className="card form-card">
+            <span className="status-badge">Cancelled</span>
+            <h2>This dinner is cancelled.</h2>
+            <p className="muted">
+              Planning and reminders have stopped for everyone. This dinner
+              cannot be reopened.
+            </p>
+            <p className="muted small">
+              Any restaurant reservation or calendar event must be cancelled
+              manually. Muse has not changed those for you.
+            </p>
+          </section>
+        ) : withdrawn ? (
           <section className="card form-card">
             <h2>You're taking a break</h2>
             <p className="muted">

@@ -32,9 +32,7 @@ describe("dinner forms", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Wednesday, November 11" }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Add hours to 2 dates" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Apply to 2 dates" }));
     fireEvent.click(screen.getByRole("button", { name: /No requirements/ }));
     fireEvent.click(screen.getByRole("button", { name: /Save my answers/ }));
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
@@ -52,10 +50,9 @@ describe("dinner forms", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Tuesday, November 10" }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Add hours to 1 date" }),
-    );
-    fireEvent.change(screen.getByLabelText("Window 1 from"), {
+    fireEvent.click(screen.getByRole("button", { name: "Apply to 1 date" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit window 1" }));
+    fireEvent.change(screen.getByLabelText("I'm free from"), {
       target: { value: "18:30" },
     });
     rerender(
@@ -72,7 +69,7 @@ describe("dinner forms", () => {
       />,
     );
     expect(
-      (screen.getByLabelText("Window 1 from") as HTMLInputElement).value,
+      (screen.getByLabelText("I'm free from") as HTMLInputElement).value,
     ).toBe("18:30");
   });
   it("does not request any private API outside Telegram even if unsafe identity exists", async () => {
