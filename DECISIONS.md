@@ -2,7 +2,7 @@
 
 ## ADR-001: one Node.js/TypeScript service
 
-Fastify exposes only webhook, OAuth, privacy, support and health routes. grammY implements Telegram transport. Domain rules are pure functions; orchestration authenticates actors; adapters perform external IO; Postgres is authoritative. No runtime multi-agent system, Redis or separate queue service. Railway runs one process with database jobs. Node 22 is the deployment baseline.
+Fastify exposes webhook, OAuth, privacy, support, health, authenticated Mini App APIs and scoped `/app/` static assets. grammY implements Telegram transport. Domain rules are pure functions; orchestration authenticates actors; adapters perform external IO; Postgres is authoritative. No runtime multi-agent system, Redis or separate queue service. Render or Railway runs one process with database jobs. Node 22 is the deployment baseline.
 
 ## ADR-002: versioned aggregate and transactional inbox/outbox
 
@@ -23,3 +23,9 @@ Everyone approved is required. Model prose cannot relax requirements. All materi
 ## ADR-006: verification levels
 
 Vitest acceptance IDs link to SPEC.md. Real Postgres tests check locks, races, retries, rollback and deletion. Provider protocol tests use clearly labeled fixtures. Opt-in live checks use actual credentials and make no bookings. A real trial and submission are tracked separately; passing local tests does not establish them.
+
+## ADR-007: form-based Telegram coordination
+
+React/Vite builds a mobile Mini App served by the existing Fastify process, avoiding another service, hosting account or domain. Inline and menu Web App buttons carry Telegram-signed identity. Server validation of each request plus trusted private bot session and current membership protects APIs; no browser identity override exists. One host form owns location/timezone and a required per-person budget; group size includes dates for two. Each guest supplies willingness, so a suggested host time never becomes silent availability.
+
+Pending guest responses live in the validated aggregate's private join request until approval claims a place atomically. API projections whitelist shared plan fields and the caller's own inputs. Per-user form hashes bind shared settings and own inputs without rejecting unrelated concurrent saves. Database action receipts persist request hashes/results in the same transaction as state and outbox effects. Research fingerprints bind planning inputs while ignoring delivery/reminder metadata; pending searches coalesce and obsolete results are silent. Telegram messages focus on milestones; forms and dashboards show routine feedback.

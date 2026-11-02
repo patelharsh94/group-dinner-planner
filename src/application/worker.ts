@@ -1,3 +1,4 @@
+import { researchVersion } from "./research-version.js";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
 import { z } from "zod";
@@ -37,6 +38,7 @@ const JobSchema = z.object({
   userId: z.string(),
   revision: z.number().int(),
   message: z.string().optional(),
+  researchVersion: z.string().optional(),
 });
 export class Worker {
   private workerId = randomUUID();
@@ -237,7 +239,13 @@ export class Worker {
       await this.store.markSuppressed(work.id, this.workerId);
       return;
     }
-    if (record.revision !== job.revision) {
+    if (
+      record.revision !== job.revision &&
+      !(
+        work.kind === "research" &&
+        job.researchVersion === researchVersion(record.state)
+      )
+    ) {
       await this.stale(work, job.userId, record.id);
       return;
     }
@@ -469,14 +477,15 @@ export class Worker {
     await this.store.processWork(work.id, this.workerId, async (tx) => {
       const current = await tx.getDinner<AppDinner>(record.id);
       if (!current || !authorized(current.state, user)) return;
-      if (current.revision !== record.revision) {
-        await this.coordinator.message(
-          tx,
-          work.id,
-          user,
-          "Dinner changed while that work was running. The stale result was discarded. Use /status, then repeat your request.",
-          { dinnerId: record.id },
-        );
+      if (
+        current.revision !== record.revision &&
+        !(
+          work.kind === "research" &&
+          researchVersion(current.state) === researchVersion(record.state)
+        )
+      ) {
+        // A newer constraint save queues current research; stale provider results stay silent.
+        await this.refreshCalendarTask(tx, work, current, user);
         return;
       }
       await apply(tx, current);
@@ -487,14 +496,32 @@ export class Worker {
     user: string,
     dinnerId: string,
   ): Promise<void> {
-    await this.store.processWork(work.id, this.workerId, (tx) =>
-      this.coordinator.message(
-        tx,
-        work.id,
-        user,
-        "Dinner changed before that request ran. The stale task was discarded. Use /status, then repeat your request.",
-        { dinnerId },
-      ),
+    await this.store.processWork(work.id, this.workerId, async (tx) => {
+      const current = await tx.getDinner<AppDinner>(dinnerId);
+      if (current) await this.refreshCalendarTask(tx, work, current, user);
+    });
+  }
+
+  private async refreshCalendarTask(
+    tx: DinnerTx,
+    work: ClaimedWork,
+    current: DinnerRecord<AppDinner>,
+    user: string,
+  ): Promise<void> {
+    if (
+      work.kind !== "calendar" ||
+      current.endedAt ||
+      !authorized(current.state, user)
+    )
+      return;
+    if (!(await tx.getCalendarConnection(current.id, user))) return;
+    await this.coordinator.job(
+      tx,
+      work.id,
+      "calendar",
+      current.id,
+      user,
+      current.revision,
     );
   }
   async sweep(): Promise<void> {
@@ -596,6 +623,24 @@ export function researchContext(
       },
       slots: candidateSlots(d, now),
       dietary,
+      preferences: [
+        ...new Set(
+          required
+            .flatMap((member) => {
+              const own = d.constraints[member.id];
+              return [
+                ...(own?.preferences ?? []),
+                ...(own?.dietary ?? [])
+                  .filter(
+                    (item) => item.strength === "flexible" && !item.allergy,
+                  )
+                  .map((item) => item.requirement),
+              ];
+            })
+            .map((value) => value.trim())
+            .filter(Boolean),
+        ),
+      ].slice(0, 64),
       travel,
       partySize: required.length,
     },

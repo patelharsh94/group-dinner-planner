@@ -4,6 +4,8 @@ COPY package*.json ./
 RUN npm ci
 COPY tsconfig*.json ./
 COPY src ./src
+COPY web ./web
+COPY vite.config.ts ./
 RUN npm run build
 FROM node:22-bookworm-slim
 ENV NODE_ENV=production

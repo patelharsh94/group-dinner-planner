@@ -16,6 +16,7 @@ export async function migrate(pool: Pool): Promise<void> {
       ["001", "001_initial.sql"],
       ["002", "002_usage.sql"],
       ["003", "003_reminder_limits.sql"],
+      ["004", "004_miniapp.sql"],
     ] as const) {
       const existing = await client.query(
         "SELECT version FROM schema_migrations WHERE version=$1",

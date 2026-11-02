@@ -1,0 +1,969 @@
+import { randomBytes } from "node:crypto";
+import { z } from "zod";
+import { DateTime } from "luxon";
+import {
+  ConstraintSchema,
+  DinnerSetupSchema,
+  DomainError,
+  approveMember,
+  confirmVersion,
+  createDinner,
+  exportIcs,
+  raiseDispute,
+  removeDietary,
+  removeFirmLimit,
+  reportAllergySafety,
+  resolveDispute,
+  selectAlternative,
+  setReminderConsent,
+  updateConstraints,
+  updateSetup,
+  type Constraints,
+} from "../domain/index.js";
+import {
+  AppDinnerSchema,
+  authorized,
+  canPlan,
+  organizer,
+  type AppDinner,
+} from "../application/model.js";
+import type { Coordinator } from "../application/coordinator.js";
+import {
+  decrypt,
+  encrypt,
+  randomToken,
+  tokenHash,
+} from "../adapters/security.js";
+import { TokensSchema } from "../adapters/google.js";
+import type { Config } from "../config.js";
+import type { DinnerRecord, DinnerTx, PgStore } from "../persistence/store.js";
+import type {
+  BootstrapResponse,
+  MutationEnvelope,
+  MutationResponse,
+} from "./contracts.js";
+import { MiniAppFault, type MiniAppActor } from "./auth.js";
+import { stableHash } from "./hash.js";
+import { formVersion, invitation, project, summary } from "./view.js";
+const uid = () => randomBytes(12).toString("hex");
+const actions = [
+  "create",
+  "join",
+  "approve",
+  "reject",
+  "savePreferences",
+  "updateDinner",
+  "research",
+  "select",
+  "confirm",
+  "change",
+  "resolve",
+  "staffReport",
+  "invite",
+  "calendarConnect",
+  "calendarActivate",
+  "calendarSync",
+  "calendarDisconnect",
+  "reminders",
+  "stop",
+  "delete",
+  "resume",
+] as const;
+export const EnvelopeSchema = z
+  .object({
+    requestId: z
+      .string()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    action: z.enum(actions),
+    dinnerId: z.string().min(1).max(128).optional(),
+    formVersion: z.string().max(128).optional(),
+    payload: z.unknown().optional(),
+  })
+  .strict();
+const setupInput = z
+  .object({
+    city: z.string().trim().min(1).max(100),
+    area: z.string().trim().max(100).optional(),
+    windowStart: z.string().date(),
+    windowEnd: z.string().date(),
+    timezone: z.string().max(100),
+    currency: z.string().regex(/^[A-Z]{3}$/),
+    durationMinutes: z.number().int().min(15).max(480),
+    partySize: z.number().int().min(2).max(6),
+    budget: z.object({
+      amount: z.number().positive(),
+      basis: z.literal("per-person").default("per-person"),
+    }),
+    consent: z.literal(true),
+  })
+  .strict();
+export const PreferencesSchema = ConstraintSchema.pick({
+  availability: true,
+  dietary: true,
+  preferences: true,
+  budget: true,
+  travel: true,
+})
+  .extend({
+    availability: ConstraintSchema.shape.availability.unwrap().min(1),
+    dietary: ConstraintSchema.shape.dietary.unwrap().default([]),
+    foodConfirmed: z.literal(true),
+    removeDietary: z.array(z.string().min(1).max(200)).max(32).optional(),
+    removeLimits: z
+      .array(z.enum(["budget", "travel"]))
+      .max(2)
+      .optional(),
+  })
+  .strict();
+function requireOwner(s: AppDinner, user: string) {
+  if (!organizer(s, user))
+    throw new MiniAppFault(
+      "AUTHORIZATION",
+      403,
+      "Only the organizer can do that.",
+    );
+}
+function ready(s: AppDinner): boolean {
+  return (
+    canPlan(s) &&
+    s.dinner.setup.intendedAttendees.every((id) =>
+      s.dinner.members.some((m) => m.id === id),
+    ) &&
+    s.dinner.members
+      .filter((m) => m.required)
+      .every(
+        (m) =>
+          !!s.dinner.constraints[m.id]?.availability?.length &&
+          s.dinner.constraints[m.id]?.dietary !== undefined,
+      )
+  );
+}
+function applyPreferences(
+  s: AppDinner,
+  user: string,
+  raw: unknown,
+  now: string,
+): void {
+  const {
+    foodConfirmed: _,
+    removeDietary: removals = [],
+    removeLimits = [],
+    ...patch
+  } = PreferencesSchema.parse(raw);
+  for (const requirement of removals)
+    s.dinner = removeDietary(s.dinner, user, requirement, now);
+  for (const kind of removeLimits)
+    s.dinner = removeFirmLimit(s.dinner, user, kind, now);
+  s.dinner = updateConstraints(s.dinner, user, patch, now);
+}
+function stagedPreferences(
+  existing: Constraints | undefined,
+  raw: unknown,
+): Constraints {
+  const {
+    foodConfirmed: _,
+    removeDietary: removals = [],
+    removeLimits = [],
+    ...patch
+  } = PreferencesSchema.parse(raw);
+  const previous: Constraints = structuredClone(existing ?? {});
+  for (const limit of removeLimits) delete previous[limit];
+  const dietary = new Map(
+    (previous.dietary ?? [])
+      .filter((d) => !removals.includes(d.requirement))
+      .map((d) => [d.requirement, d]),
+  );
+  for (const entry of patch.dietary) {
+    const old = dietary.get(entry.requirement);
+    if (
+      old &&
+      ((old.allergy && !entry.allergy) ||
+        (old.strength === "firm" && entry.strength === "flexible"))
+    )
+      throw new MiniAppFault(
+        "EXPLICIT_REMOVAL",
+        409,
+        "Explicitly remove an existing requirement before relaxing it.",
+      );
+    dietary.set(entry.requirement, entry);
+  }
+  for (const key of ["budget", "travel"] as const)
+    if (
+      previous[key]?.strength === "firm" &&
+      patch[key]?.strength === "flexible"
+    )
+      throw new MiniAppFault(
+        "EXPLICIT_REMOVAL",
+        409,
+        "Explicitly remove a firm limit before relaxing it.",
+      );
+  return ConstraintSchema.parse({
+    ...previous,
+    ...patch,
+    dietary: [...dietary.values()],
+  });
+}
+export class MiniAppService {
+  constructor(
+    readonly store: PgStore,
+    readonly coordinator: Coordinator,
+    readonly config: Config,
+  ) {}
+  private async started(tx: DinnerTx, user: string) {
+    if (!(await tx.getSession(user)))
+      throw new MiniAppFault(
+        "BOT_START_REQUIRED",
+        403,
+        "Start the bot in your private Telegram chat first.",
+      );
+  }
+  async bootstrap(
+    actor: MiniAppActor,
+    invite?: string,
+  ): Promise<BootstrapResponse> {
+    return this.store.transaction(async (tx) => {
+      await this.started(tx, actor.id);
+      const records = await tx.listDinnersForUser<AppDinner>(actor.id),
+        session = await tx.getSession(actor.id);
+      let invited;
+      if (invite) {
+        const dinnerId = await tx.lookupInvitation(tokenHash(invite));
+        const record = dinnerId
+          ? await tx.getDinner<AppDinner>(dinnerId)
+          : null;
+        if (!record || record.endedAt)
+          throw new MiniAppFault(
+            "INVITATION",
+            404,
+            "Invitation expired or unavailable.",
+          );
+        AppDinnerSchema.parse(record.state);
+        invited = invitation(record, actor.id);
+      }
+      return {
+        actor,
+        dinners: records.map((r) => summary(r, actor.id)),
+        currentDinnerId: session?.currentDinnerId ?? null,
+        ...(invited ? { invitation: invited } : {}),
+        supportContact: this.config.SUPPORT_CONTACT,
+        privacyUrl: this.config.PUBLIC_URL + "/privacy",
+        botUsername: this.config.TELEGRAM_BOT_USERNAME,
+      };
+    });
+  }
+  async dinner(actor: MiniAppActor, id: string) {
+    return this.store.transaction(async (tx) => {
+      await this.started(tx, actor.id);
+      const record = await this.record(tx, id);
+      return project(tx, record, actor.id, this.coordinator.now());
+    });
+  }
+  async calendar(actor: MiniAppActor, id: string): Promise<string> {
+    return this.store.transaction(async (tx) => {
+      await this.started(tx, actor.id);
+      const r = await this.record(tx, id);
+      if (!authorized(r.state, actor.id) || !canPlan(r.state))
+        throw new MiniAppFault(
+          "MEMBERSHIP",
+          403,
+          "Current consent and approval are required.",
+        );
+      return exportIcs(r.state.dinner, this.coordinator.now());
+    });
+  }
+  private async record(
+    tx: DinnerTx,
+    id?: string,
+  ): Promise<DinnerRecord<AppDinner>> {
+    const record = id ? await tx.getDinner<AppDinner>(id) : null;
+    if (!record)
+      throw new MiniAppFault("DINNER", 404, "This dinner is unavailable.");
+    AppDinnerSchema.parse(record.state);
+    return record;
+  }
+  async mutate(actor: MiniAppActor, raw: unknown): Promise<MutationResponse> {
+    const envelope = EnvelopeSchema.parse(raw),
+      hash = stableHash(envelope);
+    return this.store.transaction(async (tx) => {
+      await this.started(tx, actor.id);
+      const receipt = await tx.getMiniAppReceipt(actor.id, envelope.requestId);
+      if (receipt) {
+        if (receipt.requestHash !== hash)
+          throw new MiniAppFault(
+            "REQUEST_REUSED",
+            409,
+            "Use a new request ID for a different action.",
+          );
+        const outcome = receipt.response as Omit<MutationResponse, "dinner"> & {
+          dinnerId?: string;
+        };
+        const { dinnerId, ...result } = outcome;
+        if (dinnerId) {
+          const record = await this.record(tx, dinnerId);
+          if (
+            !record.state.consents[actor.id]?.active ||
+            (!authorized(record.state, actor.id) &&
+              !record.state.joinRequests[actor.id])
+          )
+            throw new MiniAppFault(
+              "MEMBERSHIP",
+              403,
+              "Current consent and approval are required.",
+            );
+          return {
+            ...result,
+            dinner: await project(tx, record, actor.id, this.coordinator.now()),
+          };
+        }
+        return result;
+      }
+      if (
+        !["stop", "delete"].includes(envelope.action) &&
+        !(await tx.consumeUsage(
+          "user-updates",
+          actor.id,
+          this.coordinator.now().slice(0, 10),
+          this.config.MAX_UPDATES_PER_USER_PER_DAY,
+        ))
+      )
+        throw new MiniAppFault(
+          "LIMIT",
+          429,
+          "Daily limit reached. Try again tomorrow.",
+        );
+      const response = await this.action(tx, actor, envelope);
+      if (!["stop", "delete"].includes(envelope.action)) {
+        const { dinner, ...outcome } = response,
+          dinnerId = dinner?.id ?? envelope.dinnerId;
+        await tx.putMiniAppReceipt(
+          actor.id,
+          envelope.requestId,
+          hash,
+          { ...outcome, ...(dinnerId ? { dinnerId } : {}) },
+          dinnerId,
+        );
+      }
+      return response;
+    });
+  }
+  private async action(
+    tx: DinnerTx,
+    actor: MiniAppActor,
+    input: MutationEnvelope,
+  ): Promise<MutationResponse> {
+    const user = actor.id,
+      now = this.coordinator.now(),
+      event = `miniapp:${user}:${input.requestId}`,
+      payload = input.payload ?? {};
+    if (input.action === "stop" || input.action === "delete") {
+      await this.coordinator.withdraw(
+        tx,
+        user,
+        event,
+        input.action === "delete",
+      );
+      return {
+        ok: true,
+        deleted: input.action === "delete",
+        message:
+          input.action === "delete"
+            ? "Your data was deleted."
+            : "Participation stopped.",
+      };
+    }
+    if (input.action === "create") {
+      const p = setupInput.parse(payload);
+      if (await tx.findActiveDinner(user))
+        throw new MiniAppFault(
+          "ACTIVE_DINNER",
+          409,
+          "You already organize an active dinner.",
+        );
+      if ((await tx.activeDinnerCount()) >= this.config.MAX_ACTIVE_DINNERS)
+        throw new MiniAppFault("LIMIT", 429, "The service is at capacity.");
+      const id = uid(),
+        roster = [
+          { id: user, name: actor.name },
+          ...Array.from({ length: p.partySize - 1 }, (_, i) => ({
+            id: `slot-${id}-${i}`,
+            name: `Guest ${i + 1}`,
+          })),
+        ];
+      const setup = DinnerSetupSchema.parse({
+        ...p,
+        area: p.area || p.city,
+        budget: p.budget,
+        timezoneConfirmed: true,
+        currencyConfirmed: true,
+        intendedAttendees: roster.map((r) => r.id),
+      });
+      if (
+        setup.windowEnd <
+        DateTime.fromISO(now).setZone(setup.timezone).toISODate()!
+      )
+        throw new MiniAppFault(
+          "DATE",
+          400,
+          "Choose a current or future date window.",
+        );
+      const state: AppDinner = {
+        dinner: createDinner(id, user, setup, now),
+        roster,
+        consents: { [user]: { active: true, at: now, version: "1.0" } },
+        joinRequests: {},
+        reminders: {},
+        collectionNotified: false,
+      };
+      const record = await tx.createDinner({ id, organizerId: user, state });
+      await tx.setSession(user, {
+        currentDinnerId: id,
+        pendingSetup: null,
+        pendingOnboard: null,
+      });
+      const token = randomToken();
+      await tx.createInvitation(
+        tokenHash(token),
+        id,
+        new Date(Date.parse(now) + 14 * 86400000),
+      );
+      return {
+        ok: true,
+        dinner: await project(tx, record, user, now),
+        invitationUrl: this.inviteUrl(token),
+      };
+    }
+    if (input.action === "join") {
+      const p = z
+          .object({
+            invite: z.string().min(1).max(256),
+            consent: z.literal(true),
+            preferences: PreferencesSchema,
+          })
+          .strict()
+          .parse(payload),
+        id = await tx.lookupInvitation(tokenHash(p.invite));
+      const record = await this.record(tx, id ?? undefined),
+        s = AppDinnerSchema.parse(record.state);
+      if (record.endedAt)
+        throw new MiniAppFault("ENDED", 409, "This dinner has ended.");
+      if (input.dinnerId && input.dinnerId !== record.id)
+        throw new MiniAppFault(
+          "INVITATION",
+          400,
+          "Invitation does not match this dinner.",
+        );
+      if (input.formVersion !== formVersion(s, user))
+        throw new MiniAppFault(
+          "STALE_FORM",
+          409,
+          "Dinner details changed. Reload the invitation before saving.",
+        );
+      if (authorized(s, user))
+        return { ok: true, dinner: await project(tx, record, user, now) };
+      if (
+        !s.roster.some(
+          (r) => r.id === user || !s.dinner.members.some((m) => m.id === r.id),
+        )
+      )
+        throw new MiniAppFault(
+          "FULL",
+          409,
+          "This dinner has no available places.",
+        );
+      const {
+        foodConfirmed: _,
+        removeDietary: __,
+        removeLimits: ___,
+        ...preferences
+      } = p.preferences;
+      s.consents[user] = { active: true, at: now, version: "1.0" };
+      s.joinRequests[user] = {
+        slot:
+          s.roster.findIndex((r) => r.id === user) >= 0
+            ? s.roster.findIndex((r) => r.id === user)
+            : null,
+        name: actor.name,
+        at: now,
+        preferences,
+      };
+      const next = await this.coordinator.save(tx, record, s);
+      await tx.setSession(user, {
+        currentDinnerId: record.id,
+        pendingSetup: null,
+        pendingOnboard: null,
+      });
+      await this.coordinator.message(
+        tx,
+        event,
+        s.dinner.organizerId,
+        `${actor.name} requested to join your dinner. Open the dinner app to review.`,
+        {
+          dinnerId: record.id,
+          relatedUserIds: [user],
+          key: `${event}:join`,
+          buttons: this.coordinator.plannerButtons({ dinner: record.id }),
+        },
+      );
+      return {
+        ok: true,
+        dinner: await project(tx, next, user, now),
+        message: "Response saved. Waiting for organizer approval.",
+      };
+    }
+    let record = await this.record(tx, input.dinnerId),
+      s = AppDinnerSchema.parse(record.state);
+    if (input.action === "resume") {
+      z.object({ consent: z.literal(true) })
+        .strict()
+        .parse(payload);
+      if (record.organizerId !== user || record.endedAt)
+        throw new MiniAppFault(
+          "AUTHORIZATION",
+          403,
+          "Organizer resumption unavailable.",
+        );
+      s.consents[user] = { active: true, at: now, version: "1.0" };
+      delete s.joinRequests[user];
+      record = await this.coordinator.save(tx, record, s);
+      await tx.setSession(user, {
+        currentDinnerId: record.id,
+        pendingSetup: null,
+        pendingOnboard: null,
+      });
+      return { ok: true, dinner: await project(tx, record, user, now) };
+    }
+    if (
+      input.action === "savePreferences" &&
+      s.joinRequests[user] &&
+      s.consents[user]?.active
+    ) {
+      if (record.endedAt)
+        throw new MiniAppFault("ENDED", 409, "This dinner has ended.");
+      if (input.formVersion !== formVersion(s, user))
+        throw new MiniAppFault(
+          "STALE_FORM",
+          409,
+          "Your response changed. Reload before saving.",
+        );
+      s.joinRequests[user].preferences = stagedPreferences(
+        s.joinRequests[user].preferences ?? s.dinner.constraints[user],
+        payload,
+      );
+      record = await this.coordinator.save(tx, record, s);
+      return { ok: true, dinner: await project(tx, record, user, now) };
+    }
+    if (!authorized(s, user))
+      throw new MiniAppFault(
+        "MEMBERSHIP",
+        403,
+        "Current consent and approval are required.",
+      );
+    if (
+      record.endedAt &&
+      !["calendarDisconnect", "reminders"].includes(input.action)
+    )
+      throw new MiniAppFault("ENDED", 409, "This dinner has ended.");
+    if (
+      ["savePreferences", "updateDinner"].includes(input.action) &&
+      input.formVersion !== formVersion(s, user)
+    )
+      throw new MiniAppFault(
+        "STALE_FORM",
+        409,
+        "Your dinner or response changed. Reload before saving.",
+      );
+    const wasAgreed = s.dinner.status === "agreed";
+    let changed = false,
+      schedule = false,
+      activatedCalendar = false;
+    switch (input.action) {
+      case "savePreferences":
+        applyPreferences(s, user, payload, now);
+        changed = true;
+        schedule = true;
+        break;
+      case "updateDinner": {
+        requireOwner(s, user);
+        const p = setupInput.partial().omit({ consent: true }).parse(payload);
+        const { partySize, ...patch } = p;
+        if (partySize !== undefined && partySize !== s.roster.length)
+          throw new MiniAppFault(
+            "MEMBERSHIP",
+            400,
+            "Party size cannot change after creation.",
+          );
+        s.dinner = updateSetup(
+          s.dinner,
+          user,
+          {
+            ...patch,
+            ...(patch.area !== undefined
+              ? { area: patch.area || patch.city || s.dinner.setup.city }
+              : {}),
+          },
+          now,
+        );
+        changed = true;
+        schedule = true;
+        break;
+      }
+      case "approve": {
+        requireOwner(s, user);
+        const { userId } = z
+            .object({ userId: z.string().min(1) })
+            .parse(payload),
+          request = s.joinRequests[userId];
+        if (
+          !request ||
+          !s.consents[userId]?.active ||
+          !(await tx.getSession(userId))
+        )
+          throw new MiniAppFault(
+            "CONSENT",
+            409,
+            "An active consent request is required.",
+          );
+        const slot =
+          request.slot ??
+          s.roster.findIndex(
+            (r) => !s.dinner.members.some((m) => m.id === r.id),
+          );
+        if (
+          slot < 0 ||
+          !s.roster[slot] ||
+          s.dinner.members.some(
+            (m) => m.id === s.roster[slot].id && m.id !== userId,
+          )
+        )
+          throw new MiniAppFault(
+            "FULL",
+            409,
+            "This place is no longer available.",
+          );
+        const old = s.roster[slot].id;
+        s.roster[slot] = { id: userId, name: request.name };
+        s.dinner = updateSetup(
+          s.dinner,
+          user,
+          {
+            intendedAttendees: s.dinner.setup.intendedAttendees.map((id) =>
+              id === old ? userId : id,
+            ),
+          },
+          now,
+        );
+        s.dinner = approveMember(
+          s.dinner,
+          user,
+          { id: userId, consent: true, startedBot: true },
+          now,
+        );
+        if (request.preferences)
+          applyPreferences(
+            s,
+            userId,
+            { ...request.preferences, foodConfirmed: true },
+            now,
+          );
+        delete s.joinRequests[userId];
+        changed = true;
+        schedule = true;
+        await this.coordinator.message(
+          tx,
+          event,
+          userId,
+          "Your dinner membership was approved. Open the dinner app to see the plan.",
+          {
+            dinnerId: record.id,
+            key: `${event}:approved`,
+            buttons: this.coordinator.plannerButtons({ dinner: record.id }),
+          },
+        );
+        break;
+      }
+      case "reject": {
+        requireOwner(s, user);
+        const { userId } = z
+          .object({ userId: z.string().min(1) })
+          .parse(payload);
+        if (!s.joinRequests[userId])
+          throw new MiniAppFault("MEMBERSHIP", 404, "Request unavailable.");
+        delete s.joinRequests[userId];
+        delete s.consents[userId];
+        await tx.client.query(
+          "DELETE FROM miniapp_receipts WHERE user_id=$1 AND dinner_id=$2",
+          [userId, record.id],
+        );
+        changed = true;
+        break;
+      }
+      case "research":
+        requireOwner(s, user);
+        if (!ready(s))
+          throw new MiniAppFault(
+            "INCOMPLETE",
+            409,
+            "All intended attendees need approval and a completed response.",
+          );
+        await this.coordinator.scheduleResearch(tx, record, event);
+        break;
+      case "select": {
+        requireOwner(s, user);
+        const p = z
+          .object({
+            index: z.number().int().min(0).max(1),
+            version: z.number().int().positive(),
+          })
+          .parse(payload);
+        if (p.version !== s.dinner.activeVersion)
+          throw new MiniAppFault(
+            "STALE_PROPOSAL",
+            409,
+            "The dinner options changed. Reload before choosing.",
+          );
+        s.dinner = selectAlternative(s.dinner, user, p.index, now);
+        changed = true;
+        break;
+      }
+      case "confirm": {
+        const p = z
+          .object({ version: z.number().int().positive() })
+          .parse(payload);
+        s.dinner = confirmVersion(s.dinner, user, p.version, now);
+        changed = true;
+        break;
+      }
+      case "change": {
+        const p = z
+          .object({ reason: z.string().trim().min(1).max(2000) })
+          .parse(payload);
+        s.dinner = raiseDispute(s.dinner, user, p.reason, now);
+        changed = true;
+        schedule = true;
+        break;
+      }
+      case "resolve":
+        s.dinner = resolveDispute(s.dinner, user, now);
+        changed = true;
+        schedule = true;
+        break;
+      case "staffReport": {
+        const p = z
+          .object({
+            version: z.number().int().positive(),
+            venueId: z.string(),
+            requirement: z.string(),
+            report: z.string().min(1).max(2000),
+            accommodationConfirmed: z.literal(true),
+          })
+          .strict()
+          .parse(payload);
+        const active = s.dinner.proposals.find(
+          (proposal) => proposal.version === s.dinner.activeVersion,
+        );
+        if (
+          p.version !== s.dinner.activeVersion ||
+          !active?.options.some((option) => option.venueId === p.venueId)
+        )
+          throw new MiniAppFault(
+            "STALE_PROPOSAL",
+            409,
+            "Choose a venue from the current proposal.",
+          );
+        s.dinner = reportAllergySafety(s.dinner, user, p, now);
+        changed = true;
+        schedule = true;
+        break;
+      }
+      case "reminders": {
+        const p = z.object({ enabled: z.boolean() }).parse(payload);
+        s.dinner = setReminderConsent(s.dinner, user, p.enabled);
+        changed = true;
+        break;
+      }
+      case "invite": {
+        requireOwner(s, user);
+        const token = randomToken();
+        await tx.createInvitation(
+          tokenHash(token),
+          record.id,
+          new Date(Date.parse(now) + 14 * 86400000),
+        );
+        return {
+          ok: true,
+          invitationUrl: this.inviteUrl(token),
+          dinner: await project(tx, record, user, now),
+        };
+      }
+      case "calendarConnect": {
+        if (!this.coordinator.google)
+          throw new MiniAppFault(
+            "CALENDAR",
+            503,
+            "Calendar connection is unavailable. Manual availability still works.",
+          );
+        const state = randomToken();
+        await tx.createOAuthState(
+          tokenHash(state),
+          record.id,
+          user,
+          new Date(Date.parse(now) + 600000),
+        );
+        return {
+          ok: true,
+          calendarUrl: this.coordinator.google.authorizationUrl(state),
+        };
+      }
+      case "calendarActivate": {
+        const stored = await tx.getCalendarConnection(record.id, user);
+        if (!stored)
+          throw new MiniAppFault(
+            "CALENDAR",
+            409,
+            "Authorize your calendar first.",
+          );
+        const context = `${record.id}:${user}`,
+          tokens = TokensSchema.parse(
+            decrypt(stored, this.config.CREDENTIAL_ENCRYPTION_KEY, context),
+          );
+        await tx.setCalendarConnection(
+          record.id,
+          user,
+          encrypt(
+            { ...tokens, active: true },
+            this.config.CREDENTIAL_ENCRYPTION_KEY,
+            context,
+          ),
+        );
+        s.dinner = updateConstraints(
+          s.dinner,
+          user,
+          { calendarStatus: "unavailable" },
+          now,
+        );
+        changed = true;
+        activatedCalendar = true;
+        break;
+      }
+      case "calendarSync": {
+        const stored = await tx.getCalendarConnection(record.id, user);
+        if (!stored)
+          throw new MiniAppFault(
+            "CALENDAR",
+            409,
+            "Connect your calendar first.",
+          );
+        await this.coordinator.job(
+          tx,
+          event,
+          "calendar",
+          record.id,
+          user,
+          record.revision,
+        );
+        break;
+      }
+      case "calendarDisconnect": {
+        const stored = await tx.getCalendarConnection(record.id, user);
+        await tx.disconnectCalendar(record.id, user);
+        if (stored)
+          await tx.queue({
+            id: uid(),
+            dedupeKey: `${event}:revoke`,
+            kind: "revoke",
+            subjectUserId: user,
+            payload: { encrypted: stored, context: `${record.id}:${user}` },
+          });
+        const last =
+          s.dinner.proposals.find(
+            (p) => p.version === s.dinner.activeVersion,
+          ) ?? s.dinner.proposals.at(-1);
+        const started =
+          !!last &&
+          Date.parse(last.options[last.selectedIndex].start) <= Date.parse(now);
+        s.dinner =
+          record.endedAt || started
+            ? {
+                ...s.dinner,
+                revision: s.dinner.revision + 1,
+                constraints: {
+                  ...s.dinner.constraints,
+                  [user]: {
+                    ...s.dinner.constraints[user],
+                    busy: [],
+                    calendarStatus: "not-connected",
+                  },
+                },
+              }
+            : updateConstraints(
+                s.dinner,
+                user,
+                { busy: [], calendarStatus: "not-connected" },
+                now,
+              );
+        changed = true;
+        schedule = !record.endedAt && !started;
+        break;
+      }
+    }
+    if (changed) record = await this.coordinator.save(tx, record, s);
+    if (activatedCalendar)
+      await this.coordinator.job(
+        tx,
+        event,
+        "calendar",
+        record.id,
+        user,
+        record.revision,
+      );
+    if (schedule && ready(s))
+      await this.coordinator.scheduleResearch(tx, record, event);
+    if (
+      changed &&
+      (input.action === "select" ||
+        (input.action === "confirm" &&
+          !wasAgreed &&
+          s.dinner.status === "agreed"))
+    )
+      await this.coordinator.announce(tx, s, event);
+    return { ok: true, dinner: await project(tx, record, user, now) };
+  }
+  private inviteUrl(token: string): string {
+    return `https://t.me/${this.config.TELEGRAM_BOT_USERNAME}?start=${token}`;
+  }
+}
+export function publicFault(error: unknown): MiniAppFault {
+  if (error instanceof MiniAppFault) return error;
+  if (error instanceof DomainError)
+    return new MiniAppFault(
+      error.code,
+      ["AUTHORIZATION", "MEMBERSHIP", "CONSENT"].includes(error.code)
+        ? 403
+        : 409,
+      "This action cannot be completed. Check your own response and refresh the dinner.",
+    );
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "statusCode" in error &&
+    (error.statusCode === 400 || error.statusCode === 413)
+  )
+    return new MiniAppFault(
+      "VALIDATION",
+      error.statusCode,
+      "The request is invalid or too large.",
+    );
+  if (error instanceof z.ZodError)
+    return new MiniAppFault(
+      "VALIDATION",
+      400,
+      "Check the form fields and use dates with explicit timezone offsets.",
+    );
+  return new MiniAppFault(
+    "INTERNAL",
+    500,
+    "The request could not be completed. Please try again.",
+  );
+}

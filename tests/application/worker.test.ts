@@ -227,3 +227,65 @@ it("suppresses an opted-in reminder whose local reminder day is stale", async ()
   expect(sends).toEqual([]);
   expect(store.suppressed).toEqual(["reminder-old-day"]);
 });
+
+it("UI-05 quietly replaces a stale calendar task with work for the latest state", async () => {
+  const record = {
+    id: "d1",
+    organizerId: "1001",
+    revision: 2,
+    state: dinnerState(),
+    endedAt: null,
+  };
+  const queued: any[] = [],
+    messages: any[] = [];
+  const tx = {
+    getDinner: async () => record,
+    getCalendarConnection: async () => "encrypted-fixture",
+    queue: async (value: any) => queued.push(value),
+  };
+  const store: any = {
+    readDinner: async () => record,
+    processWork: async (_id: string, _worker: string, fn: any) => fn(tx),
+  };
+  const coordinator = new Coordinator(
+    { PUBLIC_URL: "https://planner.example" } as any,
+    undefined,
+    () => now,
+  );
+  coordinator.message = async (...args: any[]) => {
+    messages.push(args);
+  };
+  const worker = new Worker(store, coordinator, {} as any);
+  await worker.runJob({
+    id: "old-calendar",
+    kind: "calendar",
+    attempts: 1,
+    payload: { dinnerId: "d1", userId: "1001", revision: 1 },
+  } as any);
+  expect(queued).toHaveLength(1);
+  expect(queued[0].kind).toBe("calendar");
+  expect(queued[0].payload.revision).toBe(2);
+  expect(messages).toHaveLength(0);
+});
+
+it("CON-01 research carries anonymous flexible preferences without converting them into firm requirements", () => {
+  const state = dinnerState();
+  state.dinner.constraints["1001"].preferences = [
+    "Quiet setting",
+    "Outdoor seating",
+  ];
+  state.dinner.constraints["1003"].preferences = ["Quiet setting"];
+  state.dinner.constraints["1003"].dietary = [
+    { requirement: "Italian cuisine", strength: "flexible", allergy: false },
+  ];
+  const { context } = researchContext(state, now);
+  expect(context.preferences).toEqual([
+    "Quiet setting",
+    "Outdoor seating",
+    "Italian cuisine",
+  ]);
+  expect(context.dietary).not.toContainEqual(
+    expect.objectContaining({ requirement: "Italian cuisine" }),
+  );
+  expect(JSON.stringify(context)).not.toContain("1001");
+});

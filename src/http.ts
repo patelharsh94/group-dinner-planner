@@ -1,3 +1,6 @@
+import { registerPlannerStatic } from "./miniapp-static.js";
+import { registerMiniAppRoutes } from "./miniapp/routes.js";
+import type { Coordinator } from "./application/coordinator.js";
 import Fastify from "fastify";
 import { z } from "zod";
 import type { Config } from "./config.js";
@@ -70,11 +73,17 @@ function normalize(update: z.infer<typeof updateSchema>): Incoming | null {
   });
 }
 export interface ServerOptions {
+  coordinator?: Coordinator;
   store: PgStore;
   config: Config;
   oauthCallback: (query: unknown) => Promise<{ status: number; text: string }>;
 }
-export function createServer({ store, config, oauthCallback }: ServerOptions) {
+export function createServer({
+  store,
+  config,
+  oauthCallback,
+  coordinator,
+}: ServerOptions) {
   const app = Fastify({ logger: false, bodyLimit: 65536 });
   app.setErrorHandler((error, _request, reply) => {
     const code =
@@ -158,5 +167,12 @@ export function createServer({ store, config, oauthCallback }: ServerOptions) {
         );
     }
   });
+  app.get("/api/miniapp/public", async (_request, reply) =>
+    reply
+      .header("cache-control", "no-store")
+      .send({ botUsername: config.TELEGRAM_BOT_USERNAME }),
+  );
+  registerPlannerStatic(app);
+  if (coordinator) registerMiniAppRoutes(app, { store, config, coordinator });
   return app;
 }

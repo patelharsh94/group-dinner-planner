@@ -4,7 +4,7 @@ Status: not executed. Deterministic tests use explicitly synthetic participants 
 
 ## Preparation
 
-Record the official event URL and submission requirements, test city/neighborhood, consenting 3–6 attendees, date window, timezone, currency and reservation handoff owner. Ensure the public privacy/support URLs are deployed and Google access audience is appropriate. Run local, database and live integration checks. Do not record private requirements or calendar contents in the demo.
+Record the official event URL and submission requirements, test city/neighborhood, consenting 2–6 attendees, date window, timezone, currency and reservation handoff owner. Ensure the public privacy/support URLs are deployed and Google access audience is appropriate. Run local, database and live integration checks. Do not record private requirements or calendar contents in the demo.
 
 ## Defining demonstration
 
@@ -18,3 +18,7 @@ Record the official event URL and submission requirements, test city/neighborhoo
 ## Evidence and outcome
 
 Capture organizer active time, elapsed time to agreement, join/completion counts, follow-ups, number of revisions, any firm constraint violations, whether the dinner occurred, and qualitative feedback. Redact private details and do not infer general effectiveness from one trial. Record remaining blockers, fixes and rerun results. Prepare the demo recording and deliverables to match the official submission page, then obtain actual submission confirmation.
+
+## Mini App rollout check
+
+Redeploy the current commit to the existing Render web service; startup applies migration 004 and the Docker build includes `/app/`. Keep the existing secrets and domain. Run `npm run telegram:register` to refresh the authenticated webhook and add the planner menu. In a real private Telegram chat, send `/start`, create a dinner for two and share its invitation; verify a second account can start, consent, submit and receive approval. Check real iOS/Android time pickers, Google external authorization/return, calendar-file download, and stale controls after an actual shared-detail change. A bot menu update alone does not deploy application code.

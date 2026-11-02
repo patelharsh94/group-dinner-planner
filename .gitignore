@@ -9,3 +9,5 @@ __pycache__/
 dist/
 coverage/
 .postgres/
+playwright-report/
+test-results/

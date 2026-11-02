@@ -38,6 +38,7 @@ const worker = new Worker(
 const app = createServer({
   store,
   config,
+  coordinator,
   oauthCallback: googleCallback(store, coordinator, google),
 });
 await pool.query("SELECT 1 FROM dinners LIMIT 1");

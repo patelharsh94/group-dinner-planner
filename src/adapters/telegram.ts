@@ -1,10 +1,13 @@
 import { Bot, InputFile } from "grammy";
 import { z } from "zod";
 
+export type TelegramButton =
+  | { text: string; callback_data: string }
+  | { text: string; web_app: { url: string } };
 export interface MessagePayload {
   chatId: string;
   text: string;
-  buttons?: { text: string; callback_data: string }[][];
+  buttons?: TelegramButton[][];
   document?: { filename: string; content: string };
   dinnerId?: string;
   reminder?: boolean;
@@ -12,13 +15,22 @@ export interface MessagePayload {
   reply?: boolean;
   version?: number;
 }
-const button = z.object({
+const callbackButton = z.object({
   text: z.string().min(1).max(64),
   callback_data: z
     .string()
     .min(1)
     .refine((value) => Buffer.byteLength(value) <= 64),
 });
+const button = z.union([
+  callbackButton,
+  z.object({
+    text: z.string().min(1).max(64),
+    web_app: z.object({
+      url: z.url().refine((value) => new URL(value).protocol === "https:"),
+    }),
+  }),
+]);
 const payloadSchema = z
   .object({
     chatId: z.string().regex(/^[1-9]\d{0,15}$/),

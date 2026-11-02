@@ -4,13 +4,13 @@ A Telegram dinner coordinator powered by Muse. An organizer delegates dinner pla
 
 ## Status
 
-The Node.js/TypeScript service, migrations, Telegram workflow, Muse and Google adapters, tests, and Railway configuration are implemented. Live provider verification, a real-group trial and submission remain gated on credentials, consenting participants and official event instructions. Tests use labeled synthetic data and never substitute fixtures into the live bot.
+The Node.js/TypeScript service includes a React Telegram Mini App, migrations, Muse and Google adapters, tests, and Render/Railway configuration. Live provider verification, a real-group trial and submission remain gated on credentials, consenting participants and official event instructions. Tests use labeled synthetic data and never substitute fixtures into the live bot.
 
 The normative contract is [SPEC.md](SPEC.md); architecture choices are in [DECISIONS.md](DECISIONS.md). Background briefs below are historical context.
 
 ## First version
 
-- Dinner for 3–6 friends in one city.
+- Dinner for 2–6 people in one city.
 - Dinner-specific invitations and participant onboarding through a Telegram bot.
 - Private availability and preferences, two proposed plans, and revisions when constraints change.
 - Explicit confirmation of the same plan version by all required participants.
@@ -34,33 +34,26 @@ cp .env.example .env
 # webhook secret (24+ random URL-safe characters) and a 32-byte base64 encryption key.
 # Add MODEL_API_KEY for live extraction/research; Google credentials are optional.
 npm run db:migrate
+npm run build:web
 npm run dev
 ```
 
-Local `.env` values load automatically; environment variables provided by hosting take precedence. The encryption key must remain stable across restarts. An HTTPS endpoint reachable by Telegram is needed for the webhook. Once deployed, `npm run telegram:register` registers the authenticated webhook. The service does not register or replace webhooks on startup.
+Local `.env` values load automatically; environment variables provided by hosting take precedence. The encryption key must remain stable across restarts. An HTTPS endpoint reachable by Telegram is needed for the webhook. Once deployed, `npm run telegram:register` registers the authenticated webhook and the **Open planner** menu button. The service does not register or replace webhooks on startup.
 
 See [integration setup and release gates](docs/INTEGRATIONS.md) for Google consent-screen publication, scopes, provider protocol references and Render/Railway deployment. The Docker image runs migrations before starting the app, so Render's separate Pre-Deploy Command can stay empty. Manual willingness works without Google; live restaurant research requires Muse access and usable public source evidence.
 
 ## Private Telegram workflow
 
-1. Organizer sends `/new`, completes the focused setup questions, then reviews timezone, currency, budget basis and attendees before `/create`. The default is 90 minutes and a two-week window; windows are bounded to 31 days.
-2. Share the dinner invitation. Each friend selects their assigned name and consents; the organizer verifies identity and approves the membership request.
+1. Send `/start` or `/new`, then tap **Open planner**. Set the city, optional area, dates, party size (2–6) and per-person budget in one form. Timezone, currency and duration are visible editable settings owned by the organizer.
+2. Pick your own willing dates and hours, and choose no food requirements or enter yours. Optional advanced settings cover personal budget, travel and preferences. No willing dates are preselected.
+3. Share the dinner-specific invitation. Guests start the bot, open their private form, consent and submit once. The organizer approves their Telegram name; pending private responses stay out of planning until then.
+4. Review up to two researched options in the dashboard. The organizer can choose the alternative. Each required attendee explicitly confirms the current feasible version. Missing or contradictory firm evidence blocks agreement.
+5. Use **Request a change** and edit your response when needed. Material revisions clear confirmations. Two revised rounds per open disagreement are allowed before organizer escalation. Allergy accommodation requires the affected person's explicit staff confirmation.
+6. After agreement, download the calendar file and use the reservation handoff. The bot never books, writes calendars or changes existing reservations.
 
-Before dinner begins, the organizer can `/add_attendee NAME` up to six intended people. Joining, consent, approval and new confirmations are required; earlier private requirements remain intact. 3. Each person privately describes their requirements. Muse extracts a patch for explicit review. Manual commands work without model extraction:
+Calendar free/busy is optional; connect and activate it under settings. Manual availability works throughout. Reminders require opt-in. Privacy, stop and deletion are available in the app and via `/privacy`, `/stop`, `/delete`. Existing commands and in-progress chat setup drafts continue to work. `/help` opens the planner.
 
-```text
-/availability 2026-11-06T18:00:00-06:00 2026-11-06T22:00:00-06:00
-/constraints {"dietary":[{"requirement":"vegan","strength":"firm","allergy":false}],"budget":{"amount":50,"strength":"firm"}}
-```
-
-`/availability` replaces your willingness windows with that one interval; `/constraints` accepts an array of windows. Other fields are preserved. Dietary additions merge with existing requirements. `/remove_diet EXACT_REQUIREMENT` and `/remove_limit budget|travel` explicitly withdraw your own limits. Times require explicit offsets; ambiguous local dates are clarified.
-
-4. Research starts after availability collection, or the organizer sends `/research`. At most two sourced options appear. Option 1 is active; the organizer can `/select 2`. Missing, stale or contradictory firm evidence blocks agreement. Source checks conservatively recognize explicit days/hours, dietary support, locations, prices and travel origins; unsupported page formats remain unknown.
-5. `/change REASON` records a private objection, then provide the changed requirement. `/resolve` closes your own objection. Two revised rounds are allowed before escalation. Schedule/scope changes clear prior confirmations. Everyone required must explicitly confirm the current feasible version.
-6. For allergies, `/staff VENUE_ID REQUIREMENT | what staff said` stages a report. A separate fixed-text button requires the affected person to affirm that staff said they can accommodate the allergy. Uncertain or negative staff responses must remain unresolved.
-7. After agreement, `/export` sends `.ics` privately. Reservation status is a link or manual handoff; the bot makes no bookings or calendar writes, and replanning never changes an existing reservation.
-
-`/calendar` connects primary free/busy only; `/calendar_activate` must come from the requesting Telegram identity. `/calendar_sync` refreshes; `/disconnect` removes access and explicitly returns to manual planning. Calendar evidence expires after 24 hours and must cover the proposed interval. `/reminders on` opts in, with local quiet hours and a global 24-hour limit. `/stop` withdraws consent, `/delete` erases private data, and `/resume` lets a stopped organizer explicitly reconsent. Use `/help`, `/privacy`, `/support` and `/status` at any point.
+For frontend development, run `npm run dev:web` alongside `npm run dev`; Vite proxies `/api` to port 3000. The production build serves `/app/` and its APIs from the same Fastify process and HTTPS domain. Opening the app outside Telegram shows the bot link; there is no production authentication bypass. A public HTTPS URL, including the existing Render URL, is sufficient; a custom domain is optional.
 
 ## Verify
 
@@ -69,6 +62,8 @@ npm run typecheck
 npm test
 npm run test:db:embedded
 npm run build
+npx playwright install chromium
+npm run test:browser
 npm audit
 ```
 

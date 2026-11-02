@@ -19,3 +19,17 @@ Not executed: deployed Telegram conversation, actual Muse extraction/search eval
 The Docker startup now applies migrations before starting the application, so Render does not require a separate pre-deploy hook. Two startup regression tests passed: successful migrations precede the server, and migration failure aborts startup. Typecheck and build passed. The real-Postgres suite now passes 20 scenarios, including concurrent migration reruns preserving schema versions and stored state. No Render deployment was performed by this change.
 
 Before publishing the implementation to GitHub, the full suite passed: 82 unit/application/deployment scenarios and 20 real-Postgres scenarios, plus typecheck, build and formatting checks. The publishable files were checked for configured credentials and private-key material; `.env` remains excluded from Git. Live Render deployment status is verified separately from these local checks.
+
+## Mini App redesign — 2026-11-01
+
+The planner now uses React forms served by the existing Fastify service, with shared organizer settings and a two-person default (2–6 supported). Verification used synthetic participants and restaurant evidence only.
+
+- TypeScript checks and production server/frontend builds passed.
+- 97 server/domain/adapter/deployment tests and 13 frontend tests passed.
+- 38 real PostgreSQL tests passed, including two-person versioned agreement, private staged responses, approval races, independent form saves, stale selections, receipt replay after revision/withdrawal/deletion, stale allergy attestations on replaced venues, and the legacy four-person objection/schedule-change conversation.
+- Five mobile Chromium flows passed, covering creation, availability, approval, research/confirmation, guest consent, shared-detail changes during polling, deletion and outside-Telegram privacy. The final browser pass uses the production bundle served by Fastify with production CSP/cache headers.
+- Mobile light/dark screenshots were inspected; no clipping was observed. Independent review findings were resolved and covered by regressions, including stopped-host recovery and clearing obsolete calendar checks when returning to manual planning.
+- `npm audit` reported zero vulnerabilities; whitespace checks passed.
+- Full Docker image build could not run because the local Docker daemon was stopped. The same Node 22 TypeScript/Vite build steps and container startup-order regression tests passed.
+
+This change has not been deployed to Render or registered as the live bot menu. Real Telegram WebView behavior, Google authorization, provider research and a consenting two-person trial remain live checks after rollout. No live-feature scope was reduced.

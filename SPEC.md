@@ -1,10 +1,10 @@
 # Group Dinner Planner v1 — normative contract
 
-Version 1.0.0, 2026-10-28. This document overrides background briefs and draft prompts. MUST denotes required application behavior. Requirement IDs appear in executable Vitest test names and `specs/`. Fixtures are test/rehearsal data only.
+Version 1.1.0, 2026-11-01. This document overrides background briefs and draft prompts. MUST denotes required application behavior. Requirement IDs appear in executable Vitest test names and `specs/`. Fixtures are test/rehearsal data only.
 
 ## Scope and setup
 
-- **SET-01** A private Telegram organizer creates one active dinner for 3–6 intended attendees, including themselves, in one destination city. Setup MUST collect city, bounded search area, date window, IANA timezone, currency, duration, budget amount and basis, and intended attendee names. Timezone and currency require explicit confirmation. Defaults offered for confirmation: next two weeks, 90 minutes. The trial city MUST NOT be hardcoded.
+- **SET-01** A private Telegram organizer creates one active dinner for 2–6 intended attendees, including themselves, in one destination city. A Mini App form collects city, optional neighborhood (blank means citywide), a date window, party size and one required per-person budget. The organizer owns timezone, currency and duration. Device timezone, USD, 90 minutes, two people and the next two weeks are visible, editable defaults; saving explicitly confirms timezone/currency and consent. Guests inherit these shared details. Names are obtained from Telegram upon joining; no guest names are required upfront. Windows are bounded to 31 days. The trial city MUST NOT be hardcoded.
 - **SET-02** Dates with missing zones, ambiguous relative wording, invalid local times, or DST ambiguity MUST be clarified; the system MUST NOT silently choose an interpretation. All intervals are stored as offset-bearing instants; local display uses the dinner timezone. Revisions are allowed only before the active dinner starts.
 
 ## Identity and privacy
@@ -35,6 +35,15 @@ Version 1.0.0, 2026-10-28. This document overrides background briefs and draft p
 - **OPS-01** Authenticate Telegram webhooks with a secret header; durably deduplicate update IDs. Atomically persist dinner state, inbox completion and outbound work. Use transactional state version checks. Recover pending work after restart. Outbound network ambiguity MUST be recorded and MUST NOT trigger blind resend; successful delivery is not agreement.
 - **OPS-02** Notify the organizer at setup, collection completion, proposals, agreement and blockers. Shared updates contain aggregate progress only. Reminders require opt-in, at most once per participant per dinner-local date, and only 09:00–20:59 local time. Recheck delivery eligibility at send time. Rate and usage limits are configurable.
 - **EVAL-01** Versioned Muse evaluations cover extraction, follow-ups, disagreement, dietary search, privacy probes and prompt injection. Evaluate structured decisions and source grounding, not exact wording. Critical authorization/privacy failures block release. Live checks and real-group trial are distinct from deterministic fixtures.
+
+## Telegram Mini App
+
+- **UI-01** `/start`, `/new`, invitation links and the bot menu open the same mobile planner at `/app/`. The normal flow MUST NOT require typed commands, ISO dates, IANA identifiers, JSON or assigned-name selection. Existing dinners, commands and in-progress setup drafts remain usable.
+- **UI-02** Each person privately selects their own willing dates and time ranges; bulk applying hours is allowed, preselecting willing dates is not. Food input requires an explicit choice of no requirements or entered requirements. Travel limits, personal budget and flexible preferences are optional advanced inputs. DST gaps and ambiguous wall times require correction or an explicit offset choice.
+- **UI-03** A guest explicitly consents and submits their response once. Pending responses are private and excluded from planning until organizer approval atomically claims a place. Only the requesting user can read their own pending answers. The organizer sees pending names, never private answers.
+- **UI-04** Mini App APIs validate Telegram-signed `initData` server-side (maximum age one hour, future skew at most 30 seconds), reject duplicate parameters and require server-recorded private bot contact. Actor IDs, roles and membership are never accepted from client assertions. APIs project only authorized plan details, own private answers and aggregate progress; authentication material is not stored in browser persistence or operational logs.
+- **UI-05** Each mutation has a persistent idempotency key and executes with state/outbox updates in one transaction. Form freshness binds shared settings, own inputs and own membership, allowing unrelated people to save concurrently. Research uses the latest complete planning inputs; obsolete queued tasks/results are discarded quietly. Chat contains meaningful milestones/blockers, while the dashboard owns field feedback and progress.
+- **UI-06** The dashboard supports membership approval, own response edits, organizer shared-detail edits, research, at most two proposals, alternative selection, version-bound confirmation, objections, own objection resolution, explicit allergy staff reports, `.ics` export, reservation handoff, Google connection/activation/disconnect, opt-in reminders, stop and deletion. Unresolved private evidence is shown only to its owner; aggregate feasibility can be shared.
 
 ## Release acceptance
 

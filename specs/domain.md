@@ -4,7 +4,7 @@ All commands are pure and return a replacement aggregate. The caller persists it
 
 ## Requirements and verification
 
-- SETUP-01: City, bounded area, local date window, valid timezone, confirmed timezone and currency, positive duration and budget, and 3–6 distinct intended attendees including the organizer are explicit.
+- SETUP-01: City, bounded area, local date window, valid timezone, confirmed timezone and currency, positive duration and budget, and 2–6 distinct intended attendees including the organizer are explicit.
 - JOIN-01: Intended membership requires organizer approval, prior bot start and active dinner consent. All approved participants default to required. An organizer must explicitly change a member's required flag before removing that attendee from the intended list. The organizer stays required.
 - CONSTRAINT-01: Constraint patches preserve other fields. Manual availability and optional calendar busy intervals use explicit ISO offsets; positive intervals are required. Firm and flexible diet, budget and travel constraints remain distinct. Preferences never substitute for evidence.
 - DIETARY-01: Dietary patches merge by requirement and preserve prior requirements, including when an empty array is submitted. An existing allergy or firm requirement cannot be weakened through an ordinary patch. `removeDietary` requires the authenticated affected participant and explicitly deletes that requirement, its staff reports and all proposal confirmations.

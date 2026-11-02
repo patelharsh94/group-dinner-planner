@@ -149,7 +149,7 @@ describe("dinner aggregate requirements", () => {
     };
     expect(evaluateFeasibility(d, option, now).status).toBe("unresolved");
   });
-  it("SETUP-01 rejects ambiguous timezone and fewer than three attendees", () => {
+  it("SETUP-01 requires confirmed timezone and two to six attendees", () => {
     expect(() =>
       createDinner(
         "d",
@@ -167,8 +167,20 @@ describe("dinner aggregate requirements", () => {
         "a",
         {
           ...setup,
-          intendedAttendees: ["a", "b"],
+          intendedAttendees: ["a"],
         },
+        now,
+      ),
+    ).toThrow();
+    expect(
+      createDinner("two", "a", { ...setup, intendedAttendees: ["a", "b"] }, now)
+        .setup.intendedAttendees,
+    ).toHaveLength(2);
+    expect(() =>
+      createDinner(
+        "seven",
+        "a",
+        { ...setup, intendedAttendees: ["a", "b", "c", "d", "e", "f", "g"] },
         now,
       ),
     ).toThrow();

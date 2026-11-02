@@ -135,7 +135,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       await worker.runJob(work!);
     }
     it("SET-01 JOIN-01 creates, invites, collects consent and approves all four people", async () => {
-      await send(users[0], "/new");
+      // Resume a pre-Mini-App draft: legacy in-progress questionnaires remain compatible.
+      await store.transaction((tx) =>
+        tx.setSession(users[0], {
+          currentDinnerId: null,
+          pendingSetup: { step: 0, values: {}, name: "Organizer" },
+          pendingOnboard: null,
+        }),
+      );
       for (const answer of [
         "Fixture City",
         "Centre",
@@ -188,13 +195,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         users[1],
         "/change I need a firm vegan option. Please research an alternative.",
       );
-      // The objection triggered a read-only job; it becomes stale when the actual requirement arrives.
+      // The requirement save replaces the pending objection search with current complete inputs.
       await send(
         users[1],
         '/constraints {"dietary":[{"requirement":"vegan","strength":"firm","allergy":false}]}',
       );
-      await research(); // stale task discarded
-      await research(); // current task reuses every unaffected requirement
+      await research(); // coalesced current task reuses every unaffected requirement
       let s = await state();
       expect(s.dinner.proposals.at(-1)!.options[0].venueId).toBe("alternative");
       expect(s.dinner.confirmations).toEqual({});

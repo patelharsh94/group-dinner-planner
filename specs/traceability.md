@@ -15,3 +15,6 @@ Canonical IDs in SPEC.md map to executable Vitest scenarios below. Domain scenar
 - **OPS-01:** `tests/persistence/store.test.ts` inbox/outbox rollback, replay, CAS concurrency, leases, ambiguity and retry bounds; HTTP durable enqueue/retryable failure; Telegram delivery classification.
 - **OPS-02:** domain REMINDER-01..03; worker opt-out/stale-day suppression; database global reminder reservation and usage counters.
 - **EVAL-01:** `evals/v1/cases.json` and `scripts/evaluate-muse.ts` provide the live evaluation harness. Execution requires a Muse key; critical failures block release. Deterministic privacy/auth tests above exercise application enforcement separately.
+
+- **UI-01 / UI-02:** coordinator planner-entry tests; `web/src` form/time tests; browser mobile form scenarios.
+- **UI-03 / UI-04 / UI-05 / UI-06:** `tests/miniapp` signed auth tests and `tests/persistence/miniapp.test.ts` private staging, approval, independent forms, deduplication and two-person replanning. Research fingerprint checks in `tests/application/research-version.test.ts`; legacy four-person conversation verifies compatibility.

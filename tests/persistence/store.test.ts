@@ -318,7 +318,7 @@ describe.skipIf(!url)("Postgres durable state", () => {
           "SELECT version FROM schema_migrations ORDER BY version",
         )
       ).rows.map((row) => row.version),
-    ).toEqual(["001", "002", "003"]);
+    ).toEqual(["001", "002", "003", "004"]);
   });
   it("PRIV-02 erases pending membership requests even when addressed to the organizer", async () => {
     const id = "join-notice-" + suffix,

@@ -70,3 +70,40 @@ describe("Telegram transport", () => {
     });
   });
 });
+
+it("UI-01 sends HTTPS Mini App buttons and rejects insecure launch URLs", async () => {
+  const sendMessage = vi.fn().mockResolvedValue({});
+  const api = {
+    sendMessage,
+    sendDocument: vi.fn(),
+    answerCallbackQuery: vi.fn(),
+  } as any;
+  const transport = new TelegramTransport("fixture-token", api);
+  await transport.send({
+    chatId: "42",
+    text: "Open your planner",
+    buttons: [
+      [
+        {
+          text: "Open planner",
+          web_app: { url: "https://planner.example/app/?dinner=abc" },
+        },
+      ],
+    ],
+  });
+  expect(
+    sendMessage.mock.calls[0][2].reply_markup.inline_keyboard[0][0],
+  ).toEqual({
+    text: "Open planner",
+    web_app: { url: "https://planner.example/app/?dinner=abc" },
+  });
+  await expect(
+    transport.send({
+      chatId: "42",
+      text: "Open",
+      buttons: [
+        [{ text: "Open", web_app: { url: "http://planner.example/app/" } }],
+      ],
+    }),
+  ).rejects.toThrow();
+});

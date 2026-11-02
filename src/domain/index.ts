@@ -154,7 +154,7 @@ export const DinnerSetupSchema = z
       amount: z.number().positive(),
       basis: z.enum(["per-person", "total"]),
     }),
-    intendedAttendees: z.array(z.string().min(1)).min(3).max(6),
+    intendedAttendees: z.array(z.string().min(1)).min(2).max(6),
   })
   .refine((v) => v.windowEnd >= v.windowStart, "Invalid date window")
   .refine(

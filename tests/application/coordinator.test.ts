@@ -529,7 +529,66 @@ it("records a staff safety report only after the affected participant explicitly
   );
   expect(
     tx.out.some((work: any) =>
-      /version 2|fresh proposal/i.test(work.payload.text),
+      /version 2|fresh proposal|Dinner option ready/i.test(work.payload.text),
     ),
   ).toBe(true);
+});
+
+it("UI-01 /start establishes trusted bot access and opens one form without a questionnaire", async () => {
+  const tx = fakeTx(base());
+  const coordinator = new Coordinator(config, undefined, () => now);
+  await send(coordinator, tx, "999", "/start");
+  expect(await tx.getSession("999")).not.toBeNull();
+  expect(tx.out.at(-1).payload.buttons[0][0]).toEqual({
+    text: "Open planner",
+    web_app: { url: "https://planner.example/app/" },
+  });
+  expect(tx.out.at(-1).payload.text).not.toContain("/constraints JSON");
+  await send(coordinator, tx, "999", "/new");
+  expect((await tx.getSession("999"))?.pendingSetup).toBeNull();
+  expect(tx.out.at(-1).payload.buttons[0][0].web_app.url).toContain(
+    "view=create",
+  );
+});
+it("UI-01 invitations open a private response form without name selection", async () => {
+  const tx = fakeTx(createInviteFixture());
+  await send(
+    new Coordinator(config, undefined, () => now),
+    tx,
+    "999",
+    "/start join-token",
+  );
+  expect(tx.out.at(-1).payload.buttons[0][0].web_app.url).toContain(
+    "invite=join-token",
+  );
+  expect(tx.out.at(-1).payload.text).not.toContain("Select the name");
+});
+
+it("CAL-01 PRIV-02 stop clears obsolete calendar checks while preserving manual willingness", async () => {
+  const state = base();
+  state.dinner.constraints["2"] = {
+    ...state.dinner.constraints["2"],
+    availability: [
+      { start: "2026-10-30T00:00:00Z", end: "2026-10-30T05:00:00Z" },
+    ],
+    busy: [{ start: "2026-10-30T00:00:00Z", end: "2026-10-30T01:00:00Z" }],
+    calendarStatus: "unavailable",
+    calendarCheckedAt: now,
+    calendarWindow: {
+      start: "2026-10-30T00:00:00Z",
+      end: "2026-10-30T05:00:00Z",
+    },
+  };
+  const tx = fakeTx(state);
+  await send(new Coordinator(config, undefined, () => now), tx, "2", "/stop");
+  expect(tx.state.dinner.constraints["2"].calendarStatus).toBe("not-connected");
+  expect(tx.state.dinner.constraints["2"].busy).toEqual([]);
+  expect(tx.state.dinner.constraints["2"].calendarCheckedAt).toBeUndefined();
+  expect(tx.state.dinner.constraints["2"].calendarWindow).toBeUndefined();
+  expect(tx.state.dinner.constraints["2"].availability).toHaveLength(1);
+  expect(await tx.getSession("2")).toEqual({
+    currentDinnerId: null,
+    pendingSetup: null,
+    pendingOnboard: null,
+  });
 });

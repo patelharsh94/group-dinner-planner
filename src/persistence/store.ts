@@ -154,6 +154,39 @@ export class DinnerTx {
       [dinnerId, version, JSON.stringify(snapshot)],
     );
   }
+  async getMiniAppReceipt(
+    userId: string,
+    requestId: string,
+  ): Promise<{ requestHash: string; response: unknown } | null> {
+    const result = await this.client.query(
+      "SELECT request_hash,response FROM miniapp_receipts WHERE user_id=$1 AND request_id=$2",
+      [userId, requestId],
+    );
+    return result.rows[0]
+      ? {
+          requestHash: result.rows[0].request_hash,
+          response: result.rows[0].response,
+        }
+      : null;
+  }
+  async putMiniAppReceipt(
+    userId: string,
+    requestId: string,
+    requestHash: string,
+    response: unknown,
+    dinnerId?: string,
+  ): Promise<void> {
+    await this.client.query(
+      "INSERT INTO miniapp_receipts(user_id,request_id,request_hash,response,dinner_id) VALUES ($1,$2,$3,$4,$5)",
+      [
+        userId,
+        requestId,
+        requestHash,
+        JSON.stringify(response),
+        dinnerId ?? null,
+      ],
+    );
+  }
   async getSession(userId: string): Promise<Session | null> {
     const r = await this.client.query(
       "SELECT * FROM user_sessions WHERE user_id=$1",
@@ -276,6 +309,9 @@ export class DinnerTx {
   }
   /** Application must also redact this user from domain JSON before committing. */
   async deleteUser(userId: string): Promise<void> {
+    await this.client.query("DELETE FROM miniapp_receipts WHERE user_id=$1", [
+      userId,
+    ]);
     await this.client.query(
       "UPDATE inbox SET payload='{}'::jsonb,status=CASE WHEN status IN ('pending','processing') THEN 'done' ELSE status END,completed_at=COALESCE(completed_at,now()),lease_owner=NULL,lease_until=NULL WHERE payload->>'actorId'=$1",
       [userId],
@@ -481,6 +517,9 @@ export class PgStore {
       );
       await client.query(
         "DELETE FROM reminder_limits WHERE last_at<now()-interval '7 days'",
+      );
+      await client.query(
+        "DELETE FROM miniapp_receipts WHERE created_at<now()-interval '7 days'",
       );
       await client.query("DELETE FROM usage_counts WHERE day<current_date-7");
       await client.query("DELETE FROM oauth_states WHERE expires_at<=now()");

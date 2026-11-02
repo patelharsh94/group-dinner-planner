@@ -1,3 +1,5 @@
+import { researchVersion } from "./research-version.js";
+import type { TelegramButton } from "../adapters/telegram.js";
 import { randomBytes } from "node:crypto";
 import { DateTime } from "luxon";
 import { z } from "zod";
@@ -57,7 +59,7 @@ const emptySession = (): Session => ({
 });
 const privacy =
   "I am Muse, the dinner planning assistant. I process your private dinner input with Meta Muse to coordinate this dinner. Attendees, venue, time, duration, estimated cost and reservation handoff are shared with approved attendees. Private conversations, constraints and Google busy intervals stay private. All approved attendees are required by default. /stop withdraws consent; /delete erases your data. Retention: seven days after dinner. Reminders are optional. /privacy /support";
-type Buttons = { text: string; callback_data: string }[][];
+type Buttons = TelegramButton[][];
 type SetupDraft = {
   step: number;
   values: Record<string, unknown>;
@@ -71,7 +73,7 @@ const questions = [
   "Dinner duration in minutes, or default for 90?",
   "Budget amount and basis: e.g. 60 per-person or 240 total. Include your intended estimate for food/drink/tax/tip.",
   "Currency: three-letter code, e.g. USD or EUR?",
-  "Names of the other 2–5 attendees, separated by commas. You are included automatically.",
+  "Names of the other 1–5 attendees, separated by commas. You are included automatically.",
 ];
 
 export class Coordinator {
@@ -80,6 +82,12 @@ export class Coordinator {
     readonly google?: GoogleCalendar,
     readonly now: () => string = () => new Date().toISOString(),
   ) {}
+  plannerButtons(query: Record<string, string> = {}): Buttons {
+    const url = new URL(`${this.config.PUBLIC_URL}/app/`);
+    for (const [key, value] of Object.entries(query))
+      url.searchParams.set(key, value);
+    return [[{ text: "Open planner", web_app: { url: url.toString() } }]];
+  }
   async message(
     tx: DinnerTx,
     eventId: string,
@@ -97,6 +105,8 @@ export class Coordinator {
       relatedUserIds?: string[];
     } = {},
   ): Promise<void> {
+    if (eventId.startsWith("miniapp:") && options.reply && !options.document)
+      return;
     const workId = id();
     await tx.queue({
       id: workId,
@@ -224,8 +234,11 @@ export class Coordinator {
       return;
     }
     if (command === "/help" || text === "/start") {
+      // Only trusted private webhook updates can establish bot-start proof.
+      await tx.setSession(user, session);
       await reply(
-        `${privacy}\n\n/new creates a dinner. Share its invitation with friends. /status /use DINNER_ID /invite\n/availability START END (ISO with offset)\n/constraints JSON, or describe a change privately and review the extracted patch.\n/research /confirm VERSION /change REASON /resolve /staff VENUE REQUIREMENT | staff report\n/remove_diet REQUIREMENT /remove_limit budget|travel explicitly withdraw your own limits.\n/calendar /calendar_activate /calendar_sync /disconnect\n/reminders on|off /export /stop /delete\nOrganizer: /resume /approve USER SLOT /select 2 /setup JSON /required USER yes|no /retry`,
+        "Plan dinner for 2–6 people. Set the shared details, invite someone, and add your availability in the planner.\n\n/privacy · /support · /stop · /delete",
+        this.plannerButtons(),
       );
       return;
     }
@@ -284,25 +297,10 @@ export class Coordinator {
       return;
     }
     if (command === "/new") {
-      if (await tx.findActiveDinner(user)) {
-        await reply(
-          "You already have an active dinner. /status or /use its dinner ID.",
-        );
-        return;
-      }
-      if ((await tx.activeDinnerCount()) >= this.config.MAX_ACTIVE_DINNERS) {
-        await reply(
-          "The service is at its active dinner limit. Please try later.",
-        );
-        return;
-      }
-      await tx.setSession(user, {
-        ...session,
-        pendingSetup: { step: 0, values: {}, name },
-        pendingOnboard: null,
-      });
+      await tx.setSession(user, session);
       await reply(
-        `${privacy}\nSetup stays a draft until you explicitly /create after review.\n${questions[0]}`,
+        "Set your dinner details in one form.",
+        this.plannerButtons({ view: "create" }),
       );
       return;
     }
@@ -339,7 +337,10 @@ export class Coordinator {
           currentDinnerId: dinnerId,
           pendingOnboard: null,
         });
-        await reply(sharedPlan(s, now));
+        await reply(
+          "Your dinner is ready to open.",
+          this.plannerButtons({ dinner: dinnerId }),
+        );
         return;
       }
       await tx.setSession(user, {
@@ -351,15 +352,9 @@ export class Coordinator {
           validUntil: Date.parse(now) + 10 * 60000,
         },
       });
-      const buttons = s.roster.map((r, index) => [
-        {
-          text: `Join as ${r.name}`.slice(0, 60),
-          callback_data: `choose:${dinnerId}:${index}`,
-        },
-      ]);
       await reply(
-        `Invitation to dinner in ${s.dinner.setup.city}, ${s.dinner.setup.windowStart}–${s.dinner.setup.windowEnd}. Select the name the organizer assigned to you. Approval is required.`,
-        buttons,
+        `You're invited to dinner in ${s.dinner.setup.city}. Add your availability and food needs in one form. Approval is required.`,
+        this.plannerButtons({ invite: args[0] }),
       );
       return;
     }
@@ -1174,7 +1169,7 @@ export class Coordinator {
       case 7:
         values.names = z
           .array(z.string().trim().min(1).max(80))
-          .min(2)
+          .min(1)
           .max(5)
           .refine((names) => new Set(names).size === names.length)
           .parse(text.split(","));
@@ -1298,6 +1293,11 @@ export class Coordinator {
       );
       return;
     }
+    // Pending work is durable but only the most recent complete inputs need a search.
+    await tx.client.query(
+      "UPDATE outbox SET status='suppressed',payload='{}'::jsonb,completed_at=now() WHERE kind='research' AND dinner_id=$1 AND status='pending'",
+      [record.id],
+    );
     await this.job(
       tx,
       eventId,
@@ -1305,6 +1305,7 @@ export class Coordinator {
       record.id,
       s.dinner.organizerId,
       record.revision,
+      { researchVersion: researchVersion(s) },
     );
   }
   async announce(tx: DinnerTx, s: AppDinner, eventId: string): Promise<void> {
@@ -1317,31 +1318,23 @@ export class Coordinator {
       proposal.options[0],
       this.now(),
     ).status;
-    const message = `${sharedPlan(s, this.now())}\nFeasibility: ${feasible}. ${feasible === "feasible" ? "Confirm this exact version or /change REASON." : "Provisional; required checks remain. /status after the issue is resolved."}`;
+    const selected = proposal.options[proposal.selectedIndex];
+    const venue = proposal.venues.find((v) => v.id === selected.venueId);
+    const when = DateTime.fromISO(selected.start)
+      .setZone(s.dinner.setup.timezone)
+      .toFormat("ccc, LLL d 'at' h:mm a");
     await this.broadcast(
       tx,
       s,
       eventId,
-      message,
-      proposalButtons(s.dinner),
+      s.dinner.status === "agreed"
+        ? `Dinner agreed: ${venue?.name ?? "your venue"}, ${when}. Open the planner for the calendar and reservation handoff.`
+        : `Dinner option ready: ${venue?.name ?? "a new venue"}, ${when}. ${feasible === "feasible" ? "Review and confirm in the planner." : "Some checks still need attention. Open the planner to review."}`,
+      this.plannerButtons({ dinner: s.dinner.id }),
       proposal.version,
     );
-    // Each participant only gets their own unresolved checks privately.
-    for (const member of s.dinner.members) {
-      if (!authorized(s, member.id)) continue;
-      const allergy =
-        s.dinner.constraints[member.id]?.dietary?.filter((x) => x.allergy) ??
-        [];
-      if (allergy.length)
-        await this.message(
-          tx,
-          eventId,
-          member.id,
-          `Allergy accommodation remains provisional until you report staff confirmation. Use /staff ${proposal.options[0].venueId} REQUIREMENT | what restaurant staff confirmed. Then request fresh research/proposal.`,
-          { dinnerId: s.dinner.id },
-        );
-    }
   }
+
   async stageDecision(
     tx: DinnerTx,
     record: DinnerRecord<AppDinner>,
@@ -1414,6 +1407,15 @@ export class Coordinator {
         continue;
       }
       if (s.consents[user]) s.consents[user].active = false;
+      // Unapproved answers must not remain eligible for later approval after opt-out.
+      delete s.joinRequests[user];
+      const ownConstraints = s.dinner.constraints[user];
+      if (ownConstraints) {
+        ownConstraints.busy = [];
+        ownConstraints.calendarStatus = "not-connected";
+        delete ownConstraints.calendarCheckedAt;
+        delete ownConstraints.calendarWindow;
+      }
       if (s.dinner.members.some((m) => m.id === user)) {
         // Preserve required membership as a blocker; no silent removal.
         s.dinner = {
@@ -1466,6 +1468,7 @@ export class Coordinator {
       );
     }
     await tx.deleteUser(user);
+    if (!remove) await tx.setSession(user, emptySession());
     await this.message(
       tx,
       eventId,

@@ -21,7 +21,12 @@ export const AppDinnerSchema = z.object({
   ),
   joinRequests: z.record(
     z.string(),
-    z.object({ slot: z.number().int(), name: z.string(), at: z.string() }),
+    z.object({
+      slot: z.number().int().nullable(),
+      name: z.string(),
+      at: z.string(),
+      preferences: ConstraintSchema.optional(),
+    }),
   ),
   reminders: z.record(z.string(), z.array(z.string())),
   collectionNotified: z.boolean().default(false),

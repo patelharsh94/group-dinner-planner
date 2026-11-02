@@ -50,6 +50,7 @@ export type ResearchContext = {
   setup: DinnerSetup;
   slots: { start: string; end: string }[];
   dietary: { requirement: string; allergy: boolean }[];
+  preferences?: string[];
   travel: { alias: string; origin?: string; maxMinutes: number }[];
   partySize: number;
 };
@@ -146,7 +147,7 @@ export class MuseClient {
     const { result, citations } = await this.response(
       ResearchSchema,
       context,
-      `Use live web search to find at most two venues strictly inside setup city/area. Propose only supplied slots. Each claim needs its own source URL, short supporting excerpt and retrievedAt ${now}. Unknown or contradictory details must be labeled. For dietary claims require direct menu/restaurant evidence. Never set staff reports or claim booked status. Estimate per-person prices consistently with the group's currency and budget. Travel evidence uses only supplied anonymous aliases. Unverified reservation availability is unknown.`,
+      `Use live web search to find at most two venues strictly inside setup city/area. Propose only supplied slots. Each claim needs its own source URL, short supporting excerpt and retrievedAt ${now}. Unknown or contradictory details must be labeled. For dietary claims require direct menu/restaurant evidence. Never set staff reports or claim booked status. Estimate per-person prices consistently with the group's currency and budget. Travel evidence uses only supplied anonymous aliases. Use preferences only as flexible ranking signals after satisfying firm requirements; never infer firm constraints from preferences. Unverified reservation availability is unknown.`,
       true,
     );
     const sources = new Map<string, string>();
