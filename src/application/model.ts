@@ -8,7 +8,14 @@ import {
   type PlanOption,
 } from "../domain/index.js";
 
+export const DinnerTitleSchema = z
+  .string()
+  .trim()
+  .max(80)
+  .transform((value) => value || undefined)
+  .optional();
 export const AppDinnerSchema = z.object({
+  title: DinnerTitleSchema,
   dinner: DinnerSchema,
   roster: z.array(z.object({ name: z.string(), id: z.string() })),
   consents: z.record(

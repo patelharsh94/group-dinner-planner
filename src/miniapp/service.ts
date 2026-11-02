@@ -23,6 +23,7 @@ import {
 } from "../domain/index.js";
 import {
   AppDinnerSchema,
+  DinnerTitleSchema,
   authorized,
   canPlan,
   organizer,
@@ -48,6 +49,8 @@ import { stableHash } from "./hash.js";
 import { formVersion, invitation, project, summary } from "./view.js";
 const uid = () => randomBytes(12).toString("hex");
 const actions = [
+  "renameDinner",
+  "chooseDinner",
   "setAnswerSharing",
   "cancelDinner",
   "create",
@@ -87,6 +90,7 @@ export const EnvelopeSchema = z
   .strict();
 const setupInput = z
   .object({
+    title: DinnerTitleSchema,
     city: z.string().trim().min(1).max(100),
     area: z.string().trim().max(100).optional(),
     windowStart: z.string().date(),
@@ -273,7 +277,17 @@ export class MiniAppService {
       return {
         actor,
         dinners: records.map((r) => summary(r, actor.id)),
-        currentDinnerId: session?.currentDinnerId ?? null,
+        currentDinnerId: records.some(
+          (record) =>
+            record.id === session?.currentDinnerId &&
+            (authorized(record.state, actor.id) ||
+              !!record.state.joinRequests[actor.id] ||
+              record.organizerId === actor.id),
+        )
+          ? session!.currentDinnerId
+          : null,
+        maxActiveDinnersPerOrganizer:
+          this.config.MAX_ACTIVE_DINNERS_PER_ORGANIZER ?? 5,
         ...(invited ? { invitation: invited } : {}),
         supportContact: this.config.SUPPORT_CONTACT,
         privacyUrl: this.config.PUBLIC_URL + "/privacy",
@@ -331,9 +345,10 @@ export class MiniAppService {
         if (dinnerId) {
           const record = await this.record(tx, dinnerId);
           if (
-            !record.state.consents[actor.id]?.active ||
-            (!authorized(record.state, actor.id) &&
-              !record.state.joinRequests[actor.id])
+            envelope.action !== "chooseDinner" &&
+            (!record.state.consents[actor.id]?.active ||
+              (!authorized(record.state, actor.id) &&
+                !record.state.joinRequests[actor.id]))
           )
             throw new MiniAppFault(
               "MEMBERSHIP",
@@ -397,17 +412,20 @@ export class MiniAppService {
         deleted: input.action === "delete",
         message:
           input.action === "delete"
-            ? "Your data was deleted."
-            : "Participation stopped.",
+            ? "Your data across all dinners and every dinner you organize were deleted."
+            : "Participation stopped across all your dinners.",
       };
     }
     if (input.action === "create") {
       const p = setupInput.parse(payload);
-      if (await tx.findActiveDinner(user))
+      if (
+        (await tx.countActiveDinnersForOrganizer(user)) >=
+        (this.config.MAX_ACTIVE_DINNERS_PER_ORGANIZER ?? 5)
+      )
         throw new MiniAppFault(
-          "ACTIVE_DINNER",
+          "ORGANIZER_LIMIT",
           409,
-          "You already organize an active dinner.",
+          "You have reached your active dinner limit.",
         );
       if ((await tx.activeDinnerCount()) >= this.config.MAX_ACTIVE_DINNERS)
         throw new MiniAppFault("LIMIT", 429, "The service is at capacity.");
@@ -419,8 +437,9 @@ export class MiniAppService {
             name: `Guest ${i + 1}`,
           })),
         ];
+      const { title, ...details } = p;
       const setup = DinnerSetupSchema.parse({
-        ...p,
+        ...details,
         area: p.area || p.city,
         budget: p.budget,
         timezoneConfirmed: true,
@@ -437,6 +456,7 @@ export class MiniAppService {
           "Choose a current or future date window.",
         );
       const state: AppDinner = {
+        ...(title ? { title } : {}),
         dinner: createDinner(id, user, setup, now),
         roster,
         consents: { [user]: { active: true, at: now, version: "1.0" } },
@@ -544,6 +564,15 @@ export class MiniAppService {
     }
     let record = await this.record(tx, input.dinnerId),
       s = AppDinnerSchema.parse(record.state);
+    if (input.action === "chooseDinner") {
+      const view = await project(tx, record, user, now);
+      await tx.setSession(user, {
+        currentDinnerId: record.id,
+        pendingSetup: null,
+        pendingOnboard: null,
+      });
+      return { ok: true, dinner: view };
+    }
     if (input.action === "setAnswerSharing") {
       const { enabled } = z
           .object({ enabled: z.boolean() })
@@ -687,7 +716,9 @@ export class MiniAppService {
     )
       throw new MiniAppFault("ENDED", 409, "This dinner has ended.");
     if (
-      ["savePreferences", "updateDinner"].includes(input.action) &&
+      ["savePreferences", "updateDinner", "renameDinner"].includes(
+        input.action,
+      ) &&
       input.formVersion !== formVersion(s, user)
     )
       throw new MiniAppFault(
@@ -700,6 +731,16 @@ export class MiniAppService {
       schedule = false,
       activatedCalendar = false;
     switch (input.action) {
+      case "renameDinner": {
+        requireOwner(s, user);
+        const { title } = z
+          .object({ title: z.string().trim().max(80) })
+          .strict()
+          .parse(payload);
+        s.title = title || undefined;
+        changed = true;
+        break;
+      }
       case "savePreferences":
         applyPreferences(s, user, payload, now);
         setSharing(
@@ -717,7 +758,10 @@ export class MiniAppService {
         break;
       case "updateDinner": {
         requireOwner(s, user);
-        const p = setupInput.partial().omit({ consent: true }).parse(payload);
+        const p = setupInput
+          .partial()
+          .omit({ consent: true, title: true })
+          .parse(payload);
         const { partySize, ...patch } = p;
         if (partySize !== undefined && partySize !== s.roster.length)
           throw new MiniAppFault(

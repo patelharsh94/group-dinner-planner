@@ -12,6 +12,8 @@ import { CreateDinner } from "./CreateDinner";
 import { Dashboard } from "./Dashboard";
 import { PreferencesForm, type ResponseContext } from "./PreferencesForm";
 import { applyTelegramTheme, getTelegram, invitationToken } from "./telegram";
+import { DinnerList } from "./DinnerList";
+import { dinnerName, dinnerSummary, ownedActiveCount } from "./dinners";
 import { dateLabel } from "./time";
 
 type Screen = "home" | "create" | "dashboard" | "response" | "shared";
@@ -129,6 +131,15 @@ export function App() {
     currency: string;
   }>();
   const [sharingConfirmed, setSharingConfirmed] = useState(false);
+  const [renameDraft, setRenameDraft] = useState<{
+    dinnerId: string;
+    title: string;
+    formVersion: string;
+  }>();
+  const [openingId, setOpeningId] = useState<string>();
+  const choiceQueue = useRef<Promise<void>>(Promise.resolve());
+  const viewRequest = useRef(0),
+    homeRequest = useRef(0);
   const [settings, setSettings] = useState(false),
     [danger, setDanger] = useState<"stop" | "delete" | "cancelDinner" | null>(
       null,
@@ -153,6 +164,9 @@ export function App() {
     setSharedDraft(undefined);
     setSettings(false);
     setDanger(null);
+    setSharingPreview(undefined);
+    setSharingConfirmed(false);
+    setRenameDraft(undefined);
   }, [dinner?.status]);
   useEffect(() => {
     if (!telegram) return;
@@ -163,34 +177,137 @@ export function App() {
     telegram.onEvent?.("themeChanged", update);
     return () => telegram.offEvent?.("themeChanged", update);
   }, [telegram]);
+  function clearTransients() {
+    setResponse(undefined);
+    setSharedDraft(undefined);
+    setSettings(false);
+    setDanger(null);
+    setSharingPreview(undefined);
+    setSharingConfirmed(false);
+    setRenameDraft(undefined);
+    setError("");
+    setNotice("");
+  }
+  function navigate(next: Screen): number {
+    const version = ++epoch.current;
+    viewRequest.current++;
+    homeRequest.current++;
+    activeDinner.current = undefined;
+    previousDinnerStatus.current = undefined;
+    setDinner(undefined);
+    clearTransients();
+    setBusy(false);
+    setOpeningId(undefined);
+    setScreen(next);
+    return version;
+  }
+  function acceptView(view: DinnerView) {
+    setDinner(view);
+    activeDinner.current = view.id;
+    setBootstrap((current) =>
+      current
+        ? {
+            ...current,
+            currentDinnerId: view.id,
+            dinners: [
+              ...current.dinners.filter((item) => item.id !== view.id),
+              dinnerSummary(view),
+            ],
+            ...(current.invitation?.dinnerId === view.id
+              ? {
+                  invitation: {
+                    ...current.invitation,
+                    alreadyJoined: true,
+                    pending: view.role === "pending",
+                  },
+                }
+              : {}),
+          }
+        : current,
+    );
+  }
+  function requestChoice(id: string, version: number) {
+    const request = choiceQueue.current.then(() =>
+      version === epoch.current
+        ? api!.action({ action: "chooseDinner", dinnerId: id })
+        : undefined,
+    );
+    choiceQueue.current = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    return request;
+  }
+  async function refreshHome(version = epoch.current, preserveInvite = false) {
+    if (!api) return;
+    const request = ++homeRequest.current;
+    try {
+      const next = await api.bootstrap(preserveInvite ? invite : undefined);
+      if (
+        version === epoch.current &&
+        request === homeRequest.current &&
+        activeDinner.current === undefined
+      )
+        setBootstrap(next);
+    } catch (failure) {
+      if (version === epoch.current && request === homeRequest.current)
+        setError(friendlyError(failure));
+    }
+  }
+  function goHome(preserveInvite = false) {
+    const version = navigate("home");
+    void refreshHome(version, preserveInvite);
+  }
   const load = useCallback(async () => {
     if (!api) return;
+    const version = ++epoch.current;
+    viewRequest.current++;
     setLoading(true);
     setError("");
+    activeDinner.current = undefined;
     try {
       const next = await api.bootstrap(invite);
+      if (version !== epoch.current) return;
       setBootstrap(next);
       const query = new URLSearchParams(window.location.search);
       if (query.get("view") === "create") {
-        setScreen("create");
+        if (
+          ownedActiveCount(next.dinners) >=
+          (next.maxActiveDinnersPerOrganizer ?? 5)
+        ) {
+          setScreen("home");
+          setError(
+            "You have reached the active dinner limit. Cancel a dinner or wait for one to finish before starting another.",
+          );
+        } else setScreen("create");
         return;
       }
-      const requestedDinner = query.get("dinner") ?? next.currentDinnerId;
-      if (
-        requestedDinner &&
-        (!next.invitation ||
-          next.invitation.alreadyJoined ||
-          query.has("dinner"))
-      ) {
-        const view = await api.dinner(requestedDinner);
-        setDinner(view);
-        activeDinner.current = view.id;
-        setScreen("dashboard");
+      const explicit =
+        query.get("dinner") ??
+        (invite && next.invitation?.alreadyJoined
+          ? next.invitation.dinnerId
+          : null);
+      const ongoing = next.dinners.filter((item) => !item.ended);
+      const requested =
+        explicit ??
+        (!invite && ongoing.length < 2
+          ? (ongoing[0]?.id ?? next.currentDinnerId)
+          : null);
+      if (!requested) {
+        setScreen("home");
+        return;
       }
+      const persist = !!explicit || requested !== next.currentDinnerId;
+      const result = persist
+        ? (await requestChoice(requested, version))?.dinner
+        : await api.dinner(requested);
+      if (version !== epoch.current || !result) return;
+      acceptView(result);
+      setScreen("dashboard");
     } catch (failure) {
-      setError(friendlyError(failure));
+      if (version === epoch.current) setError(friendlyError(failure));
     } finally {
-      setLoading(false);
+      if (version === epoch.current) setLoading(false);
     }
   }, [api, invite]);
   useEffect(() => {
@@ -201,11 +318,16 @@ export function App() {
     const id = dinner.id;
     async function refresh() {
       if (document.visibilityState !== "visible" || busy) return;
-      const version = epoch.current;
+      const version = epoch.current,
+        request = ++viewRequest.current;
       try {
         const next = await api!.dinner(id);
-        if (version === epoch.current && activeDinner.current === id)
-          setDinner(next);
+        if (
+          version === epoch.current &&
+          request === viewRequest.current &&
+          activeDinner.current === id
+        )
+          acceptView(next);
       } catch {
         /* Poll failures leave the last known state; explicit actions report actionable errors. */
       }
@@ -232,20 +354,38 @@ export function App() {
     });
     setScreen("response");
   }
+  useEffect(() => {
+    if (!api || screen !== "home" || !bootstrap) return;
+    const preserve =
+      !!bootstrap.invitation && !bootstrap.invitation.alreadyJoined;
+    const refresh = () => {
+      if (document.visibilityState === "visible")
+        void refreshHome(epoch.current, preserve);
+    };
+    const timer = window.setInterval(refresh, 5000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [api, screen, !!bootstrap, bootstrap?.invitation?.alreadyJoined]);
   async function openDinner(id: string) {
     if (!api) return;
+    const version = navigate("home");
     setBusy(true);
-    setError("");
-    epoch.current++;
+    setOpeningId(id);
     try {
-      const view = await api.dinner(id);
-      setDinner(view);
-      activeDinner.current = id;
+      const result = await requestChoice(id, version);
+      if (version !== epoch.current || !result?.dinner) return;
+      acceptView(result.dinner);
       setScreen("dashboard");
     } catch (failure) {
-      setError(friendlyError(failure));
+      if (version === epoch.current) setError(friendlyError(failure));
     } finally {
-      setBusy(false);
+      if (version === epoch.current) {
+        setBusy(false);
+        setOpeningId(undefined);
+      }
     }
   }
   const mutate = async (
@@ -255,47 +395,21 @@ export function App() {
     setBusy(true);
     setError("");
     setNotice("");
-    epoch.current++;
+    const version = ++epoch.current;
+    viewRequest.current++;
     try {
       const result = await api.action(input);
-      if (result.dinner) {
-        const view = result.dinner;
-        setDinner(view);
-        activeDinner.current = view.id;
-        setBootstrap((current) =>
-          current
-            ? {
-                ...current,
-                currentDinnerId: view.id,
-                dinners: [
-                  ...current.dinners.filter((item) => item.id !== view.id),
-                  {
-                    id: view.id,
-                    city: view.city,
-                    windowStart: view.windowStart,
-                    windowEnd: view.windowEnd,
-                    status: view.status,
-                    role: view.role,
-                    ended: view.ended,
-                  },
-                ],
-                ...(current.invitation?.dinnerId === view.id
-                  ? {
-                      invitation: {
-                        ...current.invitation,
-                        alreadyJoined: true,
-                        pending: view.role === "pending",
-                      },
-                    }
-                  : {}),
-              }
-            : current,
-        );
-      }
+      if (
+        version !== epoch.current &&
+        !result.deleted &&
+        input.action !== "stop"
+      )
+        return false;
+      if (result.dinner) acceptView(result.dinner);
       if (result.message) setNotice(result.message);
       if (result.invitationUrl)
         telegram?.openTelegramLink(
-          `https://t.me/share/url?url=${encodeURIComponent(result.invitationUrl)}&text=${encodeURIComponent("Come to dinner with us. Choose your own dates and preferences in Muse.")}`,
+          `https://t.me/share/url?url=${encodeURIComponent(result.invitationUrl)}&text=${encodeURIComponent(`Join ${dinner ? dinnerName(dinner) : "our dinner"}. Choose your own dates and preferences in Muse.`)}`,
         );
       if (result.calendarUrl) telegram?.openLink(result.calendarUrl);
       if (result.deleted) {
@@ -308,19 +422,18 @@ export function App() {
         setSharedDraft(undefined);
         setSharingPreview(undefined);
         setSharingConfirmed(false);
+        setRenameDraft(undefined);
         setDeleted(true);
       } else if (input.action === "stop") {
-        setSettings(false);
-        setDanger(null);
-        setScreen("home");
-        setBootstrap(await api.bootstrap());
+        const homeVersion = navigate("home");
+        await refreshHome(homeVersion);
       }
       return true;
     } catch (failure) {
-      setError(friendlyError(failure));
+      if (version === epoch.current) setError(friendlyError(failure));
       return false;
     } finally {
-      setBusy(false);
+      if (version === epoch.current) setBusy(false);
     }
   };
   const dinnerAction = (
@@ -352,8 +465,11 @@ export function App() {
     if (!api || !dinner) return;
     setBusy(true);
     setError("");
+    const version = ++epoch.current;
+    viewRequest.current++;
     try {
       const blob = await api.calendar(dinner.id);
+      if (version !== epoch.current) return;
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -366,9 +482,9 @@ export function App() {
         "Your calendar file is ready. Open it to add the agreed dinner.",
       );
     } catch (failure) {
-      setError(friendlyError(failure));
+      if (version === epoch.current) setError(friendlyError(failure));
     } finally {
-      setBusy(false);
+      if (version === epoch.current) setBusy(false);
     }
   }
   if (deleted) return <OpenInTelegram deleted />;
@@ -399,42 +515,29 @@ export function App() {
   if (screen === "create")
     return (
       <CreateDinner
-        onBack={() => setScreen("home")}
+        onBack={() => goHome()}
         busy={busy}
         error={error}
         onCreate={async (input) => {
           if (!api) return;
           setBusy(true);
           setError("");
-          epoch.current++;
+          const version = ++epoch.current;
+          viewRequest.current++;
           try {
             const result = await api.action({
               action: "create",
               payload: input,
             });
+            if (version !== epoch.current) return;
             if (result.dinner) {
-              setDinner(result.dinner);
-              activeDinner.current = result.dinner.id;
+              acceptView(result.dinner);
               edit(result.dinner);
-              setBootstrap((current) =>
-                current
-                  ? {
-                      ...current,
-                      currentDinnerId: result.dinner!.id,
-                      dinners: [
-                        ...current.dinners.filter(
-                          (item) => item.id !== result.dinner!.id,
-                        ),
-                        result.dinner!,
-                      ],
-                    }
-                  : current,
-              );
             }
           } catch (failure) {
-            setError(friendlyError(failure));
+            if (version === epoch.current) setError(friendlyError(failure));
           } finally {
-            setBusy(false);
+            if (version === epoch.current) setBusy(false);
           }
         }}
       />
@@ -484,15 +587,13 @@ export function App() {
     return (
       <>
         <Dashboard
+          key={dinner.id}
           dinner={dinner}
           actorId={bootstrap.actor.id}
           busy={busy}
           error={error}
           notice={notice}
-          onHome={() => {
-            setScreen("home");
-            setError("");
-          }}
+          onHome={() => goHome()}
           onEdit={() => edit(dinner)}
           onSettings={() => setSettings(true)}
           onAction={dinnerAction}
@@ -506,6 +607,7 @@ export function App() {
               setDanger(null);
               setSharingPreview(undefined);
               setSharingConfirmed(false);
+              setRenameDraft(undefined);
             }}
           >
             <div className="form-stack">
@@ -513,7 +615,62 @@ export function App() {
                 {dinner.city} · {dateLabel(dinner.windowStart)}–
                 {dateLabel(dinner.windowEnd)}
               </p>
-              {sharingPreview ? (
+              {renameDraft ? (
+                <section className="form-stack">
+                  <h2>Rename dinner</h2>
+                  <Field
+                    label="Dinner name"
+                    hint="Shared with invitees and dinner members. Leave blank to use the city-based name."
+                  >
+                    <input
+                      aria-label="Dinner name"
+                      value={renameDraft.title}
+                      onChange={(event) =>
+                        setRenameDraft({
+                          ...renameDraft,
+                          title: event.target.value,
+                        })
+                      }
+                      maxLength={80}
+                      placeholder={`Dinner in ${dinner.city}`}
+                    />
+                  </Field>
+                  <p className="field-hint">
+                    Changing the name keeps the current plan, confirmations and
+                    research.
+                  </p>
+                  <Button
+                    busy={busy}
+                    onClick={async () => {
+                      if (renameDraft.title.trim().length > 80) {
+                        setError(
+                          "Choose a dinner name of 80 characters or fewer.",
+                        );
+                        return;
+                      }
+                      if (
+                        await mutate({
+                          action: "renameDinner",
+                          dinnerId: renameDraft.dinnerId,
+                          formVersion: renameDraft.formVersion,
+                          payload: { title: renameDraft.title.trim() },
+                        })
+                      ) {
+                        setRenameDraft(undefined);
+                        setSettings(false);
+                      }
+                    }}
+                  >
+                    Save dinner name
+                  </Button>
+                  <Button
+                    variant="quiet"
+                    onClick={() => setRenameDraft(undefined)}
+                  >
+                    Keep current name
+                  </Button>
+                </section>
+              ) : sharingPreview ? (
                 <section
                   className="form-stack"
                   aria-label="Confirm answer sharing"
@@ -577,7 +734,7 @@ export function App() {
                       ? "Delete all your Muse data, across every dinner? Any dinners you organize will also be deleted. This cannot be undone."
                       : danger === "cancelDinner"
                         ? "Cancel this dinner for everyone? Planning and reminders will stop, and this dinner cannot be reopened. Any reservation or exported calendar event must be cancelled manually."
-                        : "Stop dinner coordination? Muse will stop planning messages for you. You can explicitly resume later."}
+                        : "Stop coordination across every dinner? Muse will stop planning messages for you and withdraw your consent across all dinners. Required places remain unresolved until the organizer reviews participation. You can explicitly resume where permitted later."}
                   </Notice>
                   <Button
                     variant="danger"
@@ -614,6 +771,19 @@ export function App() {
                     !dinner.ended &&
                     dinner.status !== "cancelled" && (
                       <>
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            setRenameDraft({
+                              dinnerId: dinner.id,
+                              title: dinner.title ?? "",
+                              formVersion: dinner.formVersion,
+                            });
+                            setError("");
+                          }}
+                        >
+                          Rename dinner
+                        </Button>
                         <Button
                           variant="secondary"
                           onClick={() => {
@@ -839,6 +1009,9 @@ export function App() {
       </>
     );
   const invitation = bootstrap.invitation;
+  const activeOwned = ownedActiveCount(bootstrap.dinners),
+    maxActive = bootstrap.maxActiveDinnersPerOrganizer ?? 5;
+  const canCreate = activeOwned < maxActive;
   return (
     <>
       <Brand />
@@ -856,9 +1029,9 @@ export function App() {
         {invitation && !invitation.alreadyJoined && (
           <section className="card invitation-card">
             <span className="eyebrow">You're invited</span>
-            <h2>Dinner in {invitation.city}</h2>
+            <h2 className="dinner-title">{dinnerName(invitation)}</h2>
             <p className="muted">
-              {dateLabel(invitation.windowStart)}–
+              {invitation.city} · {dateLabel(invitation.windowStart)}–
               {dateLabel(invitation.windowEnd)} · {invitation.partySize} at the
               table
             </p>
@@ -886,10 +1059,8 @@ export function App() {
         )}
         <button
           className="new-dinner-card"
-          onClick={() => {
-            setError("");
-            setScreen("create");
-          }}
+          disabled={!canCreate}
+          onClick={() => navigate("create")}
         >
           <span className="new-dinner-icon">
             <Icon name="plus" size={26} />
@@ -900,40 +1071,21 @@ export function App() {
           </span>
           <Icon name="arrow" />
         </button>
+        {!canCreate && (
+          <Notice>
+            You’ve reached the limit of {maxActive} active dinners. Cancel one
+            or wait for a dinner to finish before starting another.
+          </Notice>
+        )}
         {bootstrap.dinners.length > 0 && (
-          <section className="dinner-list">
-            <h2>Your dinners</h2>
-            {bootstrap.dinners.map((item) => (
-              <button
-                key={item.id}
-                className="card dinner-list-item"
-                disabled={busy}
-                onClick={() => void openDinner(item.id)}
-              >
-                <div className="date-tile">
-                  <Icon name="calendar" size={22} />
-                </div>
-                <div>
-                  <h3>{item.city}</h3>
-                  <p>
-                    {dateLabel(item.windowStart)}–{dateLabel(item.windowEnd)}
-                  </p>
-                  <span className="small muted">
-                    {item.status === "cancelled"
-                      ? "Cancelled"
-                      : item.role === "pending"
-                        ? "Waiting for approval"
-                        : item.status === "agreed"
-                          ? "Agreed plan"
-                          : item.ended
-                            ? "Dinner has begun"
-                            : "Planning together"}
-                  </span>
-                </div>
-                <Icon name="chevron" />
-              </button>
-            ))}
-          </section>
+          <>
+            <h2 className="home-dinners-heading">Your dinners</h2>
+            <DinnerList
+              dinners={bootstrap.dinners}
+              openingId={openingId}
+              onChoose={(id) => void openDinner(id)}
+            />
+          </>
         )}
         <div className="home-note">
           <Icon name="leaf" size={20} />

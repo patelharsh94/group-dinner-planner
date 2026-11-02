@@ -21,6 +21,7 @@ it("UI-05 research binds planning changes and ignores reminder/delivery-only sav
   next.dinner.members[0].remindersOptIn = true;
   next.consents["1"].at = "new";
   next.reminders["1"] = ["today"];
+  next.title = "Friday date";
   expect(researchVersion(next)).toBe(researchVersion(state));
   next.dinner.setup.area = "New area";
   expect(researchVersion(next)).not.toBe(researchVersion(state));

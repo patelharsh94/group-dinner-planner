@@ -1,4 +1,6 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { Worker } from "../../src/application/worker.js";
+import { TelegramTransport } from "../../src/adapters/telegram.js";
 import {
   createDinner,
   approveMember,
@@ -166,7 +168,8 @@ function fakeTx(
     }),
     updateResearchAttempt: async () => null,
     consumeUsage: async () => true,
-    findActiveDinner: async () => null,
+    countActiveDinnersForOrganizer: async () => 0,
+    listActiveDinnersForOrganizer: async () => [],
     activeDinnerCount: async () => 0,
     createDinner: async () => {},
     createInvitation: async () => {},
@@ -197,6 +200,7 @@ const config: any = {
   SUPPORT_CONTACT: "help@example.com",
   MAX_UPDATES_PER_USER_PER_DAY: 100,
   MAX_ACTIVE_DINNERS: 20,
+  MAX_ACTIVE_DINNERS_PER_ORGANIZER: 5,
   MAX_RESEARCH_PER_DINNER_PER_DAY: 10,
   TELEGRAM_BOT_USERNAME: "plannerbot",
   MODEL_API_KEY: undefined,
@@ -484,8 +488,8 @@ it("JOIN-01 a stopped organizer explicitly reconsents without needing an unautho
   const tx = fakeTx(base()),
     coordinator = new Coordinator(config, undefined, () => now);
   await send(coordinator, tx, "1", "/stop");
-  (tx as any).findActiveDinner = async (user: string) =>
-    user === "1" ? tx.record : null;
+  (tx as any).listActiveDinnersForOrganizer = async (user: string) =>
+    user === "1" ? [tx.record] : [];
   await send(coordinator, tx, "1", "/resume");
   const callback = tx.out.at(-1).payload.buttons[0][0].callback_data;
   await coordinator.handle(tx, {
@@ -627,4 +631,151 @@ it("CANCEL-01 cancellation survives privacy opt-out and legacy status/export can
   const count = tx.out.length;
   await coordinator.scheduleResearch(tx, tx.record, "after-cancel");
   expect(tx.out).toHaveLength(count);
+});
+
+it("MULTI-01 Telegram resume offers named dinners instead of choosing an arbitrary organizer role", async () => {
+  const first = base();
+  first.title = "Friday date";
+  first.consents["1"].active = false;
+  const tx = fakeTx(first),
+    second = structuredClone(tx.record);
+  second.id = "d2";
+  second.state.dinner.id = "d2";
+  second.state.title = "Birthday dinner";
+  (tx as any).listActiveDinnersForOrganizer = async () => [tx.record, second];
+  const get = tx.getDinner.bind(tx);
+  (tx as any).getDinner = async (id: string) =>
+    id === "d2" ? second : get(id);
+  const coordinator = new Coordinator(config, undefined, () => now);
+  await send(coordinator, tx, "1", "/resume");
+  expect(tx.out.at(-1).payload.text).toContain("Choose the dinner");
+  const buttons = tx.out.at(-1).payload.buttons.flat();
+  expect(buttons.map((button: any) => button.text).join(" ")).toContain(
+    "Friday date",
+  );
+  expect(buttons.map((button: any) => button.text).join(" ")).toContain(
+    "Birthday dinner",
+  );
+  expect((await tx.getSession("1"))?.pendingOnboard).toBeNull();
+  await coordinator.handle(tx, {
+    eventId: "pick-resume",
+    actorId: "1",
+    chatId: "1",
+    name: "Organizer",
+    text: "resume_pick:d2",
+    callbackId: "pick",
+  });
+  expect((await tx.getSession("1"))?.pendingOnboard).toEqual({
+    type: "resume",
+    dinnerId: "d2",
+  });
+  expect(tx.out.at(-1).payload.buttons[0][0].callback_data).toBe("resume:d2");
+  expect(tx.state.consents["1"].active).toBe(false);
+  await send(coordinator, tx, "2", "/resume d2");
+  expect(second.state.consents["1"].active).toBe(false);
+  expect(tx.out.at(-1).payload.text).toContain("unavailable");
+});
+
+it("MULTI-01 Telegram updates are labeled and explicit /use selection changes only chat context", async () => {
+  const state = base();
+  state.title = "Friday date";
+  const tx = fakeTx(state),
+    second = structuredClone(tx.record);
+  second.id = "d2";
+  second.state.dinner.id = "d2";
+  second.state.title = "Birthday dinner";
+  const get = tx.getDinner.bind(tx);
+  (tx as any).getDinner = async (id: string) =>
+    id === "d2" ? second : get(id);
+  const before = structuredClone(tx.state);
+  const coordinator = new Coordinator(config, undefined, () => now);
+  await send(coordinator, tx, "1", "/status");
+  expect(tx.out.at(-1).payload.text).toContain("Friday date");
+  await send(coordinator, tx, "1", "/use d2");
+  expect((await tx.getSession("1"))?.currentDinnerId).toBe("d2");
+  expect(tx.out.at(-1).payload.text).toContain("Birthday dinner");
+  await send(coordinator, tx, "1", "/status");
+  expect(tx.out.at(-1).payload.dinnerId).toBe("d2");
+  expect(tx.state).toEqual(before);
+});
+
+it("MULTI-01 legacy setup accepts additional dinners until the configured organizer cap", async () => {
+  const tx = fakeTx(base());
+  let created = 0;
+  (tx as any).getSession = async () => ({
+    currentDinnerId: "d1",
+    pendingOnboard: null,
+    pendingSetup: {
+      step: 8,
+      name: "Organizer",
+      values: { ...setup, names: ["Alex", "Sam"] },
+    },
+  });
+  (tx as any).countActiveDinnersForOrganizer = async () => 4;
+  (tx as any).createDinner = async () => {
+    created++;
+  };
+  const coordinator = new Coordinator(config, undefined, () => now);
+  await send(coordinator, tx, "1", "/create");
+  expect(created).toBe(1);
+  (tx as any).countActiveDinnersForOrganizer = async () => 5;
+  await send(coordinator, tx, "1", "/create");
+  expect(created).toBe(1);
+  expect(tx.out.at(-1).payload.text).toMatch(/5 active dinners/);
+});
+
+it("MULTI-02 delivers named invitation and organizer resumption replies through the worker before consent", async () => {
+  const state = createInviteFixture();
+  state.title = "Friday date";
+  const tx = fakeTx(state),
+    coordinator = new Coordinator(config, undefined, () => now);
+  const telegramApi = {
+    sendMessage: vi.fn(),
+    sendDocument: vi.fn(),
+    answerCallbackQuery: vi.fn(),
+  };
+  const store: any = {
+    transaction: async (fn: any) => fn(tx),
+    markSent: vi.fn(),
+    markSuppressed: vi.fn(),
+    markFailed: vi.fn(),
+    markAmbiguous: vi.fn(),
+  };
+  const worker = new Worker(
+    store,
+    coordinator,
+    new TelegramTransport("123456:fake-token", telegramApi as any),
+  );
+  await send(coordinator, tx, "999", "/start join-token");
+  await worker.send({ ...tx.out.at(-1), attempts: 1 });
+  expect(telegramApi.sendMessage).toHaveBeenCalledTimes(1);
+  expect(telegramApi.sendMessage.mock.calls[0][1]).toContain("Friday date");
+  tx.state.consents["1"].active = false;
+  await send(coordinator, tx, "1", "/resume d1");
+  await worker.send({ ...tx.out.at(-1), attempts: 1 });
+  expect(telegramApi.sendMessage).toHaveBeenCalledTimes(2);
+  expect(telegramApi.sendMessage.mock.calls[1][1]).toContain("Friday date");
+  expect(tx.state.consents["1"].active).toBe(false);
+  expect(store.markSuppressed).not.toHaveBeenCalled();
+});
+
+it("MULTI-02 accepts maximum-length names in the Telegram resume chooser", async () => {
+  const state = base();
+  state.title = "x".repeat(80);
+  state.consents["1"].active = false;
+  const tx = fakeTx(state),
+    second = structuredClone(tx.record);
+  second.id = "d2";
+  second.state.dinner.id = "d2";
+  (tx as any).listActiveDinnersForOrganizer = async () => [tx.record, second];
+  await send(new Coordinator(config, undefined, () => now), tx, "1", "/resume");
+  const api = {
+    sendMessage: vi.fn(),
+    sendDocument: vi.fn(),
+    answerCallbackQuery: vi.fn(),
+  };
+  await new TelegramTransport("123456:fake-token", api as any).send(
+    tx.out.at(-1).payload,
+  );
+  expect(api.sendMessage).toHaveBeenCalledTimes(1);
 });

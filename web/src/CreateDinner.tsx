@@ -23,6 +23,7 @@ export function CreateDinner({
   initial,
   editing = false,
 }: Props) {
+  const [title, setTitle] = useState("");
   const [city, setCity] = useState(initial?.city ?? ""),
     [area, setArea] = useState(initial?.area ?? "");
   const [timezone, setTimezone] = useState(
@@ -69,6 +70,7 @@ export function CreateDinner({
         "Please agree to dinner coordination before creating your dinner.",
       );
     await onCreate({
+      ...(title.trim() && !editing ? { title: title.trim() } : {}),
       city: city.trim(),
       ...(area.trim() ? { area: area.trim() } : {}),
       windowStart: start,
@@ -110,6 +112,22 @@ export function CreateDinner({
         </p>
         <form onSubmit={submit} className="form-stack">
           <section className="card form-card">
+            {!editing && (
+              <Field
+                label="Dinner name"
+                optional
+                hint="Shared with invitees and dinner members. Leave blank to use Dinner in your city."
+              >
+                <input
+                  aria-label="Dinner name"
+                  name="title"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  maxLength={80}
+                  placeholder="Friday friends, Team supper…"
+                />
+              </Field>
+            )}
             <Field label="Where are we meeting?">
               <input
                 name="city"

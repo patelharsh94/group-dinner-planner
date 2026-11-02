@@ -80,3 +80,5 @@ The embedded command starts isolated real Postgres on localhost:55439, creates d
 See [the verification record](docs/VERIFICATION.md) for executed checks and remaining release gates.
 
 Never commit API tokens, calendar credentials, private conversations or real participant data.
+
+Organizers can manage up to five active dinners at once (configurable with `MAX_ACTIVE_DINNERS_PER_ORGANIZER`, independently of service capacity). Add an optional name, switch through **Your dinners**, and rename ongoing plans in settings without resetting confirmations. Each dinner keeps separate participants, consent, answers, calendar connections and research. `/resume DINNER_ID` resumes one organizer role; `/stop` and `/delete` apply across all your dinners. Reminders remain limited to one per 24 hours per person across dinners.

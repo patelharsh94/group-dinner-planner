@@ -15,8 +15,12 @@ export class ApiError extends Error {
   }
 }
 const messages: Record<string, string> = {
+  ORGANIZER_LIMIT:
+    "You have reached your active dinner limit. Cancel a dinner or wait for one to finish before starting another.",
+  ACTIVE_DINNER_LIMIT:
+    "You have reached the active dinner limit. Cancel a dinner or wait for one to finish before starting another.",
   ACTIVE_DINNER:
-    "You already organize an active dinner. Return home to continue that dinner.",
+    "You have reached the active dinner limit. Return to Your dinners to continue or cancel an existing dinner.",
   FULL: "This dinner has no places left. Please check with the organizer.",
   INCOMPLETE:
     "A few responses or membership approvals are still needed. Check the dinner progress before trying again.",
@@ -108,6 +112,14 @@ export class MiniAppApi {
   action(
     input: Omit<MutationEnvelope, "requestId">,
   ): Promise<MutationResponse> {
+    // Choosing a dinner is a new navigation intent, even when a previous choice
+    // committed but its response was lost. Replaying that old receipt must not
+    // leave the server focused on a different dinner.
+    if (input.action === "chooseDinner")
+      return this.request("/api/miniapp/actions", {
+        method: "POST",
+        body: JSON.stringify({ ...input, requestId: crypto.randomUUID() }),
+      });
     const key = JSON.stringify(input);
     let intent = this.pending.get(key);
     if (intent?.attempt) return intent.attempt;

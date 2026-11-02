@@ -57,6 +57,7 @@ export function bootstrapFixture(
     actor: { id: "test-owner", name: "Test Owner" },
     dinners: [],
     currentDinnerId: null,
+    maxActiveDinnersPerOrganizer: 5,
     supportContact: "test support",
     privacyUrl: "https://example.com/test-privacy",
     botUsername: "TestMuseBot",

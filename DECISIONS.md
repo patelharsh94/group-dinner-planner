@@ -41,3 +41,9 @@ Manual form answers remain private unless their author reviews an exact preview 
 ## ADR-010: durable, sanitized research diagnostics
 
 An additive research_runs table records each queued attempt, stages, safe error categories, HTTP status, provider request identifier, timing and aggregate evidence counts. Members see a basic outcome; only the organizer receives diagnostic details and remediation. Provider response bodies, prompts and private answers are never retained in diagnostic records or operational logs. The outbox job identifier doubles as a support reference. Cancellation, supersession, exhausted retries and retention reconcile attempts transactionally. Retries remain explicit.
+
+## ADR-011: concurrent organized dinners with explicit context
+
+A configurable organizer cap (default five) replaces the database's one-active-dinner unique index. Existing serialized Postgres transactions check both per-organizer and service-wide counts before insertion; a nonunique partial index supports active lookups. Activity follows the existing end timestamp, including agreed and consent-blocked records. Retention and required membership are unchanged.
+
+Optional names live outside planning setup, so renaming does not alter research fingerprints, proposal versions or confirmations. Names are shared plain text in dinner views and Telegram context, never Muse research input. Missing names require no backfill. Mini App selection is an authorized mutation; each explicit selection uses a fresh request ID, while replaying an older receipt cannot move context. Explicit dinner IDs remain authoritative for actions and background work. Multiple ongoing dinners open a grouped overview, while deep links retain their targets. Account-wide stop/deletion and the global reminder throttle remain deliberate privacy and anti-spam policies.

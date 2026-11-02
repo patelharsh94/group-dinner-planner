@@ -57,7 +57,7 @@ describe.skipIf(!url)("Postgres durable state", () => {
     ).toBe(false);
     expect((await store.readDinner(suffix))?.state).toEqual({ count: 0 });
   });
-  it("rejects stale revisions and prevents two active dinners", async () => {
+  it("rejects stale revisions while allowing multiple active dinners", async () => {
     await store.transaction(async (tx) => {
       const d = await tx.getDinner(suffix);
       expect(d?.revision).toBe(0);
@@ -85,7 +85,8 @@ describe.skipIf(!url)("Postgres durable state", () => {
           state: {},
         }),
       ),
-    ).rejects.toThrow();
+    ).resolves.toMatchObject({ id: `other-${suffix}` });
+    expect(await store.countActiveDinnersForOrganizer(suffix)).toBe(2);
   });
   it("never requeues an abandoned delivery", async () => {
     const message = await store.claimOutbox("sender", 1);
@@ -318,7 +319,7 @@ describe.skipIf(!url)("Postgres durable state", () => {
           "SELECT version FROM schema_migrations ORDER BY version",
         )
       ).rows.map((row) => row.version),
-    ).toEqual(["001", "002", "003", "004", "005"]);
+    ).toEqual(["001", "002", "003", "004", "005", "006"]);
   });
   it("PRIV-02 erases pending membership requests even when addressed to the organizer", async () => {
     const id = "join-notice-" + suffix,

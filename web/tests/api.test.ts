@@ -1,6 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, MiniAppApi, friendlyError } from "../src/api";
 describe("Mini App transport security and retries", () => {
+  it("uses a fresh selection ID after a committed choice loses its response, another dinner is chosen, then the first is chosen again", async () => {
+    let sequence = 0,
+      focus = "",
+      calls = 0;
+    vi.stubGlobal("crypto", { randomUUID: () => `selection-${++sequence}` });
+    const receipts = new Set<string>(),
+      requestIds: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const input = JSON.parse(String(init.body));
+        requestIds.push(input.requestId);
+        calls++;
+        if (!receipts.has(input.requestId)) {
+          receipts.add(input.requestId);
+          focus = input.dinnerId;
+        }
+        if (calls === 1) throw new TypeError("Response lost after commit");
+        return new Response(
+          JSON.stringify({ ok: true, dinner: { id: input.dinnerId } }),
+        );
+      }),
+    );
+    const api = new MiniAppApi("TEST-ONLY");
+    await expect(
+      api.action({ action: "chooseDinner", dinnerId: "a" }),
+    ).rejects.toThrow();
+    await api.action({ action: "chooseDinner", dinnerId: "b" });
+    expect(focus).toBe("b");
+    await api.action({ action: "chooseDinner", dinnerId: "a" });
+    expect(requestIds[2]).not.toBe(requestIds[0]);
+    expect(focus).toBe("a");
+  });
   beforeEach(() =>
     vi.stubGlobal("crypto", {
       randomUUID: vi

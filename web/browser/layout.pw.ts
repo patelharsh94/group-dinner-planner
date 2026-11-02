@@ -36,6 +36,12 @@ async function setup(page: Page, existing = false) {
   await page.route("**/api/miniapp/dinners/test-dinner", (route) =>
     route.fulfill({ json: dinner }),
   );
+  await page.route("**/api/miniapp/actions", (route) => {
+    const action = route.request().postDataJSON();
+    expect(action.action).toBe("chooseDinner");
+    expect(action.dinnerId).toBe(dinner.id);
+    return route.fulfill({ json: { ok: true, dinner } });
+  });
 }
 async function assertNativeFieldsFit(page: Page) {
   const report = await page.evaluate(() => {

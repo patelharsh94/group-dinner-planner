@@ -11,6 +11,7 @@ export type PreferencesInput = Pick<
   removeLimits?: ("budget" | "travel")[];
 };
 export interface CreateDinnerInput {
+  title?: string;
   city: string;
   area?: string;
   windowStart: string;
@@ -23,6 +24,8 @@ export interface CreateDinnerInput {
   consent: true;
 }
 export type MiniAppActionName =
+  | "renameDinner"
+  | "chooseDinner"
   | "setAnswerSharing"
   | "cancelDinner"
   | "create"
@@ -54,6 +57,7 @@ export interface MutationEnvelope {
   payload?: unknown;
 }
 export interface DinnerSummary {
+  title?: string;
   id: string;
   city: string;
   windowStart: string;
@@ -64,6 +68,7 @@ export interface DinnerSummary {
   cancellation?: { at: string; by: string };
 }
 export interface InvitationView {
+  title?: string;
   formVersion: string;
   dinnerId: string;
   city: string;
@@ -156,6 +161,7 @@ export interface DinnerView extends DinnerSummary {
   }[];
 }
 export interface BootstrapResponse {
+  maxActiveDinnersPerOrganizer: number;
   actor: { id: string; name: string };
   dinners: DinnerSummary[];
   currentDinnerId: string | null;

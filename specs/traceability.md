@@ -24,3 +24,5 @@ Canonical IDs in SPEC.md map to executable Vitest scenarios below. Domain scenar
 
 - **SHARE-01:** real-Postgres sharing/revocation/inherited-field scenarios, `tests/persistence/research.test.ts`, frontend sharing preview and terminal revocation tests, and mobile sharing/research browser flows.
 - **RES-02:** adapter typed error and malformed output tests, real-Postgres `research-flow.test.ts` safe 401/retry conversation, research lifecycle reconciliation tests, and organizer/member diagnostic UI isolation.
+
+- **MULTI-01 / MULTI-02:** `tests/persistence/multiple-dinners.test.ts` organizer capacity, concurrent creation, metadata/selection authorization and dinner isolation; coordinator MULTI-01 tests cover legacy cap, labeled chat and explicit resume; frontend and mobile multiple-dinner scenarios cover grouped navigation, naming, limits and stale response isolation.

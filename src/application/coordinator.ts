@@ -59,8 +59,13 @@ const emptySession = (): Session => ({
   pendingOnboard: null,
 });
 const privacy =
-  "I am Muse, the dinner planning assistant. I process your private dinner input with Meta Muse to coordinate this dinner. Attendees, venue, time, duration, estimated cost and reservation handoff are shared with approved attendees. Private conversations and Google busy intervals stay private. Form answers stay private unless you explicitly share them with approved dinner members, including budget and travel starting point. All approved attendees are required by default. /stop withdraws consent; /delete erases your data. Retention: seven days after dinner. Reminders are optional. /privacy /support";
+  "I am Muse, the dinner planning assistant. I process your private dinner input with Meta Muse to coordinate this dinner. Attendees, venue, time, duration, estimated cost and reservation handoff are shared with approved attendees. Private conversations and Google busy intervals stay private. Form answers stay private unless you explicitly share them with approved dinner members, including budget and travel starting point. All approved attendees are required by default. /stop withdraws consent across all your dinners; /delete erases your data and all dinners you organize. Retention: seven days after dinner. Reminders are optional. /privacy /support";
 type Buttons = TelegramButton[][];
+function dinnerContext(state: AppDinner, text: string): string {
+  const setup = state.dinner.setup;
+  const label = state.title || `Dinner in ${setup.city}`;
+  return `${label} · ${setup.city} · ${setup.windowStart}–${setup.windowEnd}\n\n${text}`;
+}
 type SetupDraft = {
   step: number;
   values: Record<string, unknown>;
@@ -109,6 +114,12 @@ export class Coordinator {
   ): Promise<void> {
     if (eventId.startsWith("miniapp:") && options.reply && !options.document)
       return;
+    if (options.dinnerId) {
+      const record = await tx.getDinner<AppDinner>(options.dinnerId);
+      if (record) {
+        text = dinnerContext(AppDinnerSchema.parse(record.state), text);
+      }
+    }
     const workId = id();
     await tx.queue({
       id: workId,
@@ -207,8 +218,12 @@ export class Coordinator {
     const now = this.now(),
       day = now.slice(0, 10);
     const session = (await tx.getSession(user)) ?? emptySession();
-    const reply = (value: string, buttons?: Buttons) =>
-      this.message(tx, eventId, chatId, value, { reply: true, buttons });
+    const reply = (value: string, buttons?: Buttons, dinnerId?: string) =>
+      this.message(tx, eventId, chatId, value, {
+        reply: true,
+        buttons,
+        dinnerId,
+      });
 
     if (["/stop", "/delete"].includes(command)) {
       await this.withdraw(tx, user, eventId, command === "/delete");
@@ -244,26 +259,90 @@ export class Coordinator {
       );
       return;
     }
-    if (command === "/resume") {
-      const record = await tx.findActiveDinner<AppDinner>(user);
-      if (!record) {
-        await reply(
-          "No active dinner you organize was found. /new starts a dinner.",
+    if (
+      command === "/resume" ||
+      (input.callbackId && text.startsWith("resume_pick:"))
+    ) {
+      const selectedId = command === "/resume" ? args[0] : text.split(":")[1];
+      let record: DinnerRecord<AppDinner> | null;
+      if (selectedId) {
+        record = await tx.getDinner<AppDinner>(selectedId);
+        if (!record || record.endedAt || record.organizerId !== user) {
+          await reply("Organizer resumption unavailable.");
+          return;
+        }
+      } else {
+        const records = (
+          await tx.listActiveDinnersForOrganizer<AppDinner>(user)
+        )
+          .filter((r) => !r.state.consents[user]?.active)
+          .sort(
+            (a, b) =>
+              a.state.dinner.setup.windowStart.localeCompare(
+                b.state.dinner.setup.windowStart,
+              ) || a.id.localeCompare(b.id),
+          );
+        if (!records.length) {
+          await reply(
+            "No organizer roles need resuming. Open Your dinners to choose a plan.",
+            this.plannerButtons(),
+          );
+          return;
+        }
+        if (records.length > 1) {
+          await tx.setSession(user, {
+            ...session,
+            pendingSetup: null,
+            pendingOnboard: null,
+          });
+          await reply(
+            "Choose the dinner whose organizer role you want to resume. Consent applies only to the dinner you select.",
+            [
+              ...records.slice(0, 10).map((r) => [
+                {
+                  text: `${(r.state.title || `Dinner in ${r.state.dinner.setup.city}`).slice(0, 48)} · ${r.state.dinner.setup.windowStart}`,
+                  callback_data: `resume_pick:${r.id}`,
+                },
+              ]),
+              ...this.plannerButtons(),
+            ],
+          );
+          return;
+        }
+        record = records[0];
+      }
+      const state = AppDinnerSchema.parse(record.state);
+      if (state.consents[user]?.active) {
+        await this.message(
+          tx,
+          eventId,
+          chatId,
+          "Your organizer role is already active. Open this dinner in the planner.",
+          {
+            dinnerId: record.id,
+            reply: true,
+            buttons: this.plannerButtons({ dinner: record.id }),
+          },
         );
         return;
       }
       await tx.setSession(user, {
         ...session,
+        pendingSetup: null,
         pendingOnboard: { type: "resume", dinnerId: record.id },
       });
-      await reply(privacy, [
-        [
-          {
-            text: "I consent to resume my organizer role",
-            callback_data: `resume:${record.id}`,
-          },
+      // Authenticated onboarding replies must reach organizers before they reconsent.
+      await this.message(tx, eventId, chatId, dinnerContext(state, privacy), {
+        reply: true,
+        buttons: [
+          [
+            {
+              text: "I consent to resume my organizer role",
+              callback_data: `resume:${record.id}`,
+            },
+          ],
         ],
-      ]);
+      });
       return;
     }
     if (input.callbackId && text.startsWith("resume:")) {
@@ -293,8 +372,16 @@ export class Coordinator {
         pendingSetup: null,
         pendingOnboard: null,
       });
-      await reply(
-        "You explicitly reconsented and resumed your existing organizer role. Earlier confirmations remain cleared. /status",
+      await this.message(
+        tx,
+        eventId,
+        chatId,
+        "You explicitly reconsented and resumed this organizer role. Other dinners remain unchanged; earlier confirmations remain cleared. /status",
+        {
+          dinnerId,
+          reply: true,
+          buttons: this.plannerButtons({ dinner: dinnerId }),
+        },
       );
       return;
     }
@@ -342,6 +429,7 @@ export class Coordinator {
         await reply(
           "Your dinner is ready to open.",
           this.plannerButtons({ dinner: dinnerId }),
+          dinnerId,
         );
         return;
       }
@@ -355,7 +443,10 @@ export class Coordinator {
         },
       });
       await reply(
-        `You're invited to dinner in ${s.dinner.setup.city}. Add your availability and food needs in one form. Approval is required.`,
+        dinnerContext(
+          s,
+          `You're invited to dinner in ${s.dinner.setup.city}. Add your availability and food needs in one form. Approval is required.`,
+        ),
         this.plannerButtons({ invite: args[0] }),
       );
       return;
@@ -449,7 +540,10 @@ export class Coordinator {
         pendingOnboard: null,
       });
       await reply(
-        "Consent recorded. Waiting for organizer membership approval.",
+        dinnerContext(
+          s,
+          "Consent recorded. Waiting for organizer membership approval.",
+        ),
       );
       await this.message(
         tx,
@@ -476,9 +570,14 @@ export class Coordinator {
       await tx.setSession(user, {
         ...session,
         currentDinnerId: record.id,
+        pendingSetup: null,
         pendingOnboard: null,
       });
-      await reply(sharedPlan(record.state, now));
+      await this.message(tx, eventId, chatId, sharedPlan(record.state, now), {
+        dinnerId: record.id,
+        reply: true,
+        buttons: this.plannerButtons({ dinner: record.id }),
+      });
       return;
     }
 
@@ -1066,8 +1165,15 @@ export class Coordinator {
     if (text === "/create") {
       if (draft.step !== questions.length)
         throw new DomainError("SETUP", "Complete setup first.");
-      if (await tx.findActiveDinner(input.actorId))
-        throw new DomainError("SETUP", "One active dinner per organizer.");
+      const organizerLimit = this.config.MAX_ACTIVE_DINNERS_PER_ORGANIZER ?? 5;
+      if (
+        (await tx.countActiveDinnersForOrganizer(input.actorId)) >=
+        organizerLimit
+      )
+        throw new DomainError(
+          "ORGANIZER_LIMIT",
+          `You can organize up to ${organizerLimit} active dinners. Cancel or complete a dinner to free a place.`,
+        );
       if ((await tx.activeDinnerCount()) >= this.config.MAX_ACTIVE_DINNERS)
         throw new DomainError("LIMIT", "Service capacity reached.");
       const names = values.names as string[];
@@ -1520,8 +1626,8 @@ export class Coordinator {
       eventId,
       user,
       remove
-        ? "Your private data and calendar credentials were deleted. Dinners you organized were deleted. Revoke Google app access in your Google account if previously connected."
-        : "Consent withdrawn. Pending messages and calendar credentials removed; required membership remains a planning blocker. To rejoin, use a new invitation.",
+        ? "Your private data and calendar credentials were deleted across all dinners. All dinners you organized were deleted. Revoke Google app access in your Google account if previously connected."
+        : "Consent withdrawn across all your dinners. Pending messages and calendar credentials removed; required membership remains a planning blocker. To rejoin, use a new invitation.",
       { reply: true },
     );
   }

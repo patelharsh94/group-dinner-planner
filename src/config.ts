@@ -22,6 +22,11 @@ export const ConfigSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   SUPPORT_CONTACT: z.string().min(3),
   MAX_ACTIVE_DINNERS: z.coerce.number().int().positive().default(100),
+  MAX_ACTIVE_DINNERS_PER_ORGANIZER: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5),
   MAX_UPDATES_PER_USER_PER_DAY: z.coerce.number().int().positive().default(150),
   MAX_RESEARCH_PER_DINNER_PER_DAY: z.coerce
     .number()

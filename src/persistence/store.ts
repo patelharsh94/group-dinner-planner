@@ -65,14 +65,21 @@ export class DinnerTx {
     );
     return r.rows[0] ? dinner<S>(r.rows[0]) : null;
   }
-  async findActiveDinner<S = unknown>(
-    organizerId: string,
-  ): Promise<DinnerRecord<S> | null> {
-    const r = await this.client.query(
-      "SELECT * FROM dinners WHERE organizer_id=$1 AND ended_at IS NULL FOR UPDATE",
+  async countActiveDinnersForOrganizer(organizerId: string): Promise<number> {
+    const result = await this.client.query(
+      "SELECT count(*)::int AS count FROM dinners WHERE organizer_id=$1 AND ended_at IS NULL",
       [organizerId],
     );
-    return r.rows[0] ? dinner<S>(r.rows[0]) : null;
+    return result.rows[0].count;
+  }
+  async listActiveDinnersForOrganizer<S = unknown>(
+    organizerId: string,
+  ): Promise<DinnerRecord<S>[]> {
+    const result = await this.client.query(
+      "SELECT * FROM dinners WHERE organizer_id=$1 AND ended_at IS NULL ORDER BY updated_at DESC,id",
+      [organizerId],
+    );
+    return result.rows.map((row) => dinner<S>(row));
   }
   async listActiveDinners<S = unknown>(): Promise<DinnerRecord<S>[]> {
     const r = await this.client.query(
@@ -470,6 +477,18 @@ export class PgStore {
   async readDinner<S = unknown>(id: string): Promise<DinnerRecord<S> | null> {
     const r = await this.pool.query("SELECT * FROM dinners WHERE id=$1", [id]);
     return r.rows[0] ? dinner<S>(r.rows[0]) : null;
+  }
+  async countActiveDinnersForOrganizer(organizerId: string): Promise<number> {
+    return this.transaction((tx) =>
+      tx.countActiveDinnersForOrganizer(organizerId),
+    );
+  }
+  async listActiveDinnersForOrganizer<S = unknown>(
+    organizerId: string,
+  ): Promise<DinnerRecord<S>[]> {
+    return this.transaction((tx) =>
+      tx.listActiveDinnersForOrganizer<S>(organizerId),
+    );
   }
   async listActiveDinners<S = unknown>(): Promise<DinnerRecord<S>[]> {
     return this.transaction((tx) => tx.listActiveDinners<S>());

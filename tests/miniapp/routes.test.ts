@@ -91,6 +91,7 @@ describe("Mini App API boundary", () => {
         "botUsername",
         "currentDinnerId",
         "dinners",
+        "maxActiveDinnersPerOrganizer",
         "privacyUrl",
         "supportContact",
       ]);

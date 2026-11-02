@@ -1,3 +1,4 @@
+import { dinnerName } from "./dinners";
 import { AnswersPreview } from "./AnswersPreview";
 import { ResearchStatus } from "./ResearchStatus";
 import { useState } from "react";
@@ -69,30 +70,17 @@ export function Dashboard({
     <>
       <Brand back={onHome} settings={onSettings} />
       <main className="page dashboard">
-        <div className="eyebrow">{d.city} · Dinner together</div>
-        <h1>
-          {cancelled ? (
-            <>
-              Plans change.
-              <br />
-              That’s okay.
-            </>
-          ) : d.status === "agreed" ? (
-            <>
-              A table.
-              <br />A plan. Everyone.
-            </>
-          ) : (
-            <>
-              Good company.
-              <br />
-              Coming together.
-            </>
-          )}
-        </h1>
+        <button className="text-button dinners-nav" onClick={onHome}>
+          <Icon name="back" size={15} />
+          Your dinners
+        </button>
+        <div className="eyebrow">
+          {owner ? "Organizing" : "Dinner together"}
+        </div>
+        <h1 className="dinner-title">{dinnerName(d)}</h1>
         <div className="context-pill">
           <Icon name="calendar" size={16} />
-          {dateLabel(d.windowStart)}–{dateLabel(d.windowEnd)}
+          {d.city} · {dateLabel(d.windowStart)}–{dateLabel(d.windowEnd)}
           <span className="pill-dot" />
           {d.setup.durationMinutes} min
         </div>

@@ -34,6 +34,7 @@ export function publicSetup(s: AppDinner) {
 }
 export function formVersion(s: AppDinner, user: string): string {
   return stableHash({
+    title: s.title,
     setup: publicSetup(s),
     own: s.joinRequests[user]?.preferences ?? s.dinner.constraints[user] ?? {},
     membership: s.dinner.members.find((m) => m.id === user) ?? null,
@@ -49,6 +50,7 @@ export function summary(
     d = s.dinner;
   return {
     id: record.id,
+    ...(s.title ? { title: s.title } : {}),
     city: d.setup.city,
     windowStart: d.setup.windowStart,
     windowEnd: d.setup.windowEnd,
@@ -74,6 +76,7 @@ export function invitation(
   return {
     formVersion: formVersion(s, user),
     dinnerId: record.id,
+    ...(s.title ? { title: s.title } : {}),
     city: d.setup.city,
     windowStart: d.setup.windowStart,
     windowEnd: d.setup.windowEnd,

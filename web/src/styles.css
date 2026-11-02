@@ -1466,3 +1466,25 @@ input[type="checkbox"] {
 .party-response > summary .status-badge {
   margin: 0 0 0 12px;
 }
+.dinner-title {
+  overflow-wrap: anywhere;
+}
+.dinners-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 6px 0;
+  margin: -8px 0 12px;
+  color: var(--accent);
+}
+.home-dinners-heading {
+  font-size: 18px;
+  margin-top: 30px;
+}
+.dinner-groups .dinner-list {
+  margin: 22px 0 28px;
+}
+.dinner-groups .dinner-list-item h3 {
+  overflow-wrap: anywhere;
+}
