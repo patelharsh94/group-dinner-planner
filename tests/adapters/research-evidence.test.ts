@@ -46,6 +46,35 @@ it("retains independently verified identity while neighborhood remains unknown",
   expect(result.rejectedIdentities).toBe(0);
 });
 
+it.each(["travel", "dietary"] as const)(
+  "does not promote private %s source URLs into shared identity evidence",
+  (kind) => {
+    const privateUrl =
+      "https://directions.example/route?origin=private-home&destination=cafe";
+    const text = fixture().evidence.location.excerpt;
+    for (const fallback of [false, true]) {
+      const venue = fixture();
+      const claim = {
+        status: "unknown" as const,
+        url: privateUrl,
+        excerpt: text,
+        retrievedAt: now,
+      };
+      if (kind === "travel") venue.evidence.travel.person = claim;
+      else venue.evidence.dietary.privateRequirement = claim;
+      const result = retainIndependentlyVerifiedVenues(
+        [venue],
+        new Set([url, privateUrl]),
+        fallback ? new Map() : new Map([[privateUrl, text]]),
+        now,
+        fallback ? new Map([[privateUrl, text]]) : new Map(),
+      );
+      expect(result.venues).toEqual([]);
+      expect(result.rejectedIdentities).toBe(1);
+    }
+  },
+);
+
 it("scrubs unknown Yelp price instead of discarding independently identified venue", () => {
   const venue = fixture();
   venue.evidence.price = {

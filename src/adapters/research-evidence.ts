@@ -66,18 +66,24 @@ export function retainIndependentlyVerifiedVenues(
   const containsTokens = (text: string, value: string) =>
     !!value && ` ${text} `.includes(` ${value} `);
   for (const venue of venues) {
-    const claims = [
+    const publicClaims = [
       venue.evidence.location,
       venue.evidence.price,
       venue.evidence.opening,
       venue.evidence.reservation,
+    ];
+    const claims = [
+      ...publicClaims,
       ...Object.values(venue.evidence.dietary),
       ...Object.values(venue.evidence.travel),
     ];
     // Claims may quote separate portions of the same independently fetched page.
+    // Private dietary/travel URLs must never become shared identity anchors.
     const byUrl = new Map<string, string[]>();
-    for (const claim of claims) {
+    const publicUrls = new Set<string>();
+    for (const claim of publicClaims) {
       for (const source of [claim, ...(claim.relatedSources ?? [])]) {
+        publicUrls.add(canonicalEvidenceUrl(source.url));
         if (!grounded(source)) continue;
         byUrl.set(canonicalEvidenceUrl(source.url), [
           ...(byUrl.get(canonicalEvidenceUrl(source.url)) ?? []),
@@ -88,7 +94,12 @@ export function retainIndependentlyVerifiedVenues(
     // Fallbacks are provider tool excerpts from failed fetches, never model-authored claims.
     for (const [url, text] of identityFallback) {
       const key = canonicalEvidenceUrl(url);
-      if (independentUrl(key) && citations.has(key) && !sources.has(key))
+      if (
+        publicUrls.has(key) &&
+        independentUrl(key) &&
+        citations.has(key) &&
+        !sources.has(key)
+      )
         byUrl.set(key, [text]);
     }
     const identity = [...byUrl].find(([url, excerpts]) => {
