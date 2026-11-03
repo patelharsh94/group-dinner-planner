@@ -150,7 +150,7 @@ test("synthetic host: create, save own answers, invite, approve and confirm a pl
   await page.getByRole("button", { name: "Approve", exact: true }).click();
   await page.getByRole("button", { name: /Find dinner options/ }).click();
   await expect(
-    page.getByRole("heading", { name: "Synthetic Test Bistro" }),
+    page.getByRole("heading", { name: "Synthetic Test Bistro" }).first(),
   ).toBeVisible();
   await page.getByRole("button", { name: /This works for me/ }).click();
   await expect(
@@ -159,7 +159,7 @@ test("synthetic host: create, save own answers, invite, approve and confirm a pl
   await expect(page.locator("body")).not.toHaveCSS("overflow-x", "scroll");
 });
 
-test("synthetic guest: one consent save, pending approval, no organizer controls", async ({
+test("synthetic guest: consent joins automatically before answers", async ({
   page,
 }) => {
   await telegramFixture(page);
@@ -177,7 +177,7 @@ test("synthetic guest: one consent save, pending approval, no organizer controls
     currency: "USD",
     durationMinutes: 90,
     area: "Citywide",
-    budget: { amount: 50, basis: "per-person" as const },
+    budget: { amount: 50, basis: "per-person" },
     formVersion: "invite-form-1",
   };
   await page.route("**/api/miniapp/bootstrap*", (route) =>
@@ -185,73 +185,53 @@ test("synthetic guest: one consent save, pending approval, no organizer controls
       json: bootstrapFixture({
         actor: { id: "test-guest", name: "Test Guest" },
         invitation,
-      }),
+      } as any),
     }),
   );
+  let dinner = dinnerFixture({
+    role: "member",
+    own: {
+      constraints: {},
+      consent: true,
+      foodConfirmed: false,
+      availabilitySharing: true,
+      answerSharing: false,
+      reminders: false,
+      calendar: "not-connected",
+      disputeOpen: false,
+    },
+  } as any);
   await page.route("**/api/miniapp/dinners/test-dinner", (route) =>
-    route.fulfill({ json: dinnerFixture({ role: "pending" }) }),
+    route.fulfill({ json: dinner }),
   );
-  await page.route("**/api/miniapp/actions", async (route) => {
-    const action = route.request().postDataJSON() as MutationEnvelope;
-    actions.push(action);
-    await route.fulfill({
-      json: {
-        ok: true,
-        dinner: dinnerFixture({
-          role: "pending",
-          own: {
-            constraints:
-              action.action === "join"
-                ? (action.payload as any).preferences
-                : (action.payload as any),
-            foodConfirmed: true,
-            consent: true,
-            calendar: "not-connected",
-            reminders: false,
-            disputeOpen: false,
-          },
-        }),
-      },
-    });
+  await page.route("**/api/miniapp/actions", (route) => {
+    const input = route.request().postDataJSON();
+    actions.push(input);
+    if (input.action === "savePreferences")
+      dinner = {
+        ...dinner,
+        own: { ...dinner.own, constraints: input.payload, foodConfirmed: true },
+      };
+    return route.fulfill({ json: { ok: true, dinner } });
   });
   await page.goto("/app/?invite=TEST-ONLY-invite");
-  await page.getByRole("button", { name: /Add my answers/ }).click();
+  await page
+    .getByRole("checkbox", {
+      name: /join this dinner and share my manual availability/,
+    })
+    .check();
+  await page.getByRole("button", { name: "Join dinner", exact: true }).click();
   await page.getByRole("button", { name: "Tuesday, November 10" }).click();
   await page.getByRole("button", { name: "Apply to 1 date" }).click();
-  await page.getByRole("button", { name: /I have requirements/ }).click();
-  await page.getByRole("button", { name: "Vegan", exact: true }).click();
-  await page.getByRole("checkbox", { name: /I agree to Muse/ }).check();
+  await page.getByRole("button", { name: /No requirements/ }).click();
   await page.getByRole("button", { name: /Save my answers/ }).click();
   await expect(
-    page.getByRole("heading", { name: "The organizer will let you in." }),
+    page.getByRole("heading", { name: "Your answers are in" }),
   ).toBeVisible();
-  expect(actions).toHaveLength(1);
-  expect(actions[0]).toMatchObject({
-    action: "join",
-    formVersion: "invite-form-1",
-    payload: { invite: "TEST-ONLY-invite", consent: true },
-  });
+  expect(actions.map((a) => a.action)).toEqual(["join", "savePreferences"]);
   await expect(
-    page.getByRole("button", { name: "Share invitation" }),
+    page.getByRole("button", { name: "Approve", exact: true }),
   ).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: /Find dinner options/ }),
-  ).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Edit my answers", exact: true })
-    .click();
-  await page.getByRole("button", { name: "Edit window 1" }).click();
-  await page.getByLabel("I'm free from").fill("18:30");
-  await page.getByRole("button", { name: "Apply changes" }).click();
-  await page.getByRole("button", { name: /Save my answers/ }).click();
-  await expect(
-    page.getByRole("heading", { name: "The organizer will let you in." }),
-  ).toBeVisible();
-  expect(actions).toHaveLength(2);
-  expect(actions[1].action).toBe("savePreferences");
-  expect((actions[1].payload as any).availability[0].start).toContain(
-    "18:30:00-06:00",
-  );
 });
 
 test("synthetic owner: shared detail edits keep the original form version through polling", async ({

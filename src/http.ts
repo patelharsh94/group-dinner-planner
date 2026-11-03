@@ -1,3 +1,4 @@
+import type { ReservationService } from "./application/reservations.js";
 import { registerPlannerStatic } from "./miniapp-static.js";
 import { registerMiniAppRoutes } from "./miniapp/routes.js";
 import type { Coordinator } from "./application/coordinator.js";
@@ -74,6 +75,7 @@ function normalize(update: z.infer<typeof updateSchema>): Incoming | null {
 }
 export interface ServerOptions {
   coordinator?: Coordinator;
+  reservations?: ReservationService;
   store: PgStore;
   config: Config;
   oauthCallback: (query: unknown) => Promise<{ status: number; text: string }>;
@@ -83,6 +85,7 @@ export function createServer({
   config,
   oauthCallback,
   coordinator,
+  reservations,
 }: ServerOptions) {
   const app = Fastify({ logger: false, bodyLimit: 65536 });
   app.setErrorHandler((error, _request, reply) => {
@@ -173,6 +176,7 @@ export function createServer({
       .send({ botUsername: config.TELEGRAM_BOT_USERNAME }),
   );
   registerPlannerStatic(app);
-  if (coordinator) registerMiniAppRoutes(app, { store, config, coordinator });
+  if (coordinator)
+    registerMiniAppRoutes(app, { store, config, coordinator, reservations });
   return app;
 }

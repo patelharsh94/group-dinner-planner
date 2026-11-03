@@ -58,6 +58,7 @@ export type ExtractionContext = {
   currency?: string;
 };
 export type ResearchContext = {
+  targetVenue?: { name: string; address: string };
   setup: DinnerSetup;
   slots: { start: string; end: string }[];
   dietary: { requirement: string; allergy: boolean }[];
@@ -251,7 +252,7 @@ export class MuseClient {
     const { result, citations } = await this.response(
       ResearchSchema,
       context,
-      `Use live web search to find at most two venues strictly inside setup city/area. Propose only supplied slots. Each claim needs its own source URL, short supporting excerpt and retrievedAt ${now}. Unknown or contradictory details must be labeled. For dietary claims require direct menu/restaurant evidence. Never set staff reports or claim booked status. Estimate per-person prices consistently with the group's currency and budget. Travel evidence uses only supplied anonymous aliases. Use preferences only as flexible ranking signals after satisfying firm requirements; never infer firm constraints from preferences. Unverified reservation availability is unknown.`,
+      `If targetVenue is supplied research ONLY that exact restaurant and supplied slot, preserving its identity. Excerpts MUST be exact verbatim source text, not paraphrases. Include verified restaurant phone in reservation evidence when publicly listed. Use live web search to find at most two venues strictly inside setup city/area. Propose only supplied slots. Each claim needs its own source URL, short supporting excerpt and retrievedAt ${now}. Unknown or contradictory details must be labeled. For dietary claims require direct menu/restaurant evidence. Never set staff reports or claim booked status. Estimate per-person prices consistently with the group's currency and budget. Travel evidence uses only supplied anonymous aliases. Use preferences only as flexible ranking signals after satisfying firm requirements; never infer firm constraints from preferences. Unverified reservation availability is unknown.`,
       true,
     );
     await onStage?.("source_verification");
@@ -265,7 +266,10 @@ export class MuseClient {
         ...Object.values(venue.evidence.dietary),
         ...Object.values(venue.evidence.travel),
       ])
-      .map((claim) => claim.url);
+      .flatMap((claim) => [
+        claim.url,
+        ...(claim.relatedSources ?? []).map((source) => source.url),
+      ]);
     const urls = [...new Set(usedUrls)]
       .filter((url) => citations.has(url))
       .slice(0, 16);
@@ -307,21 +311,53 @@ export class MuseClient {
         })),
       ];
       for (const { kind, claim, requirement, origin } of claims) {
+        const extra = Array.isArray(claim.relatedSources)
+          ? (claim.relatedSources as { url: string; excerpt: string }[])
+          : [];
+        const grounded = [
+          { url: claim.url, excerpt: claim.excerpt },
+          ...extra,
+        ].filter(
+          (source) =>
+            citations.has(source.url) &&
+            sourceContains(sources.get(source.url) ?? "", source.excerpt),
+        );
         if (
           claim.status === "known" &&
           (!citations.has(claim.url) ||
             !sourceContains(sources.get(claim.url) ?? "", claim.excerpt) ||
-            !claimSupported(kind, claim.excerpt, {
-              ...claim,
-              requirement,
-              origin,
-              timezone: context.setup.timezone,
-              address: venue.address,
-              city: venue.city,
-              area: venue.area,
-            }))
+            !claimSupported(
+              kind,
+              grounded.map((source) => source.excerpt).join(" "),
+              {
+                ...claim,
+                requirement,
+                origin,
+                timezone: context.setup.timezone,
+                address: venue.address,
+                city: venue.city,
+                area: venue.area,
+              },
+            ))
         )
           claim.status = "unknown";
+        if (kind === "reservation") {
+          if (
+            claim.status !== "known" ||
+            typeof claim.phone !== "string" ||
+            !grounded.some((source) =>
+              source.excerpt
+                .replace(/\D/g, "")
+                .includes((claim.phone as string).replace(/\D/g, "")),
+            )
+          )
+            delete claim.phone;
+          if (
+            claim.status !== "known" ||
+            !/^https:\/\/(?:www\.)?opentable\.com\//.test(claim.url)
+          )
+            delete claim.providerRestaurantId;
+        }
         // Retrieval time is measured by the adapter, never invented by the model.
         claim.retrievedAt = now;
         if (claim.status === "known") verifiedClaims++;

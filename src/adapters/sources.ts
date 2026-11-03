@@ -240,15 +240,40 @@ export function claimSupported(
       new RegExp(`\\b${fields.minutes}\\s*(?:min|minute)`).test(value)
     );
   if (kind === "opening") return openingSupported(excerpt, fields);
-  if (kind === "location")
+  if (kind === "location") {
+    if (
+      typeof fields.address !== "string" ||
+      typeof fields.city !== "string" ||
+      typeof fields.area !== "string"
+    )
+      return false;
+    const clean = (text: string) =>
+      normalized(text)
+        .replace(/[.,]/g, "")
+        .replace(
+          /\b(east|west|north|south|road|street|avenue)\b/g,
+          (word) =>
+            ({
+              east: "e",
+              west: "w",
+              north: "n",
+              south: "s",
+              road: "rd",
+              street: "st",
+              avenue: "ave",
+            })[word]!,
+        );
+    const address = clean(fields.address),
+      text = clean(excerpt);
+    const street = address.split(clean(fields.city))[0].trim();
     return (
-      typeof fields.address === "string" &&
-      typeof fields.city === "string" &&
-      typeof fields.area === "string" &&
-      value.includes(normalized(fields.address)) &&
-      value.includes(normalized(fields.city)) &&
-      value.includes(normalized(fields.area))
+      !!street &&
+      text.includes(street) &&
+      text.includes(clean(fields.city)) &&
+      (fields.area.toLowerCase() === fields.city.toLowerCase() ||
+        text.includes(clean(fields.area)))
     );
+  }
   return true;
 }
 

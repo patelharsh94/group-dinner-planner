@@ -102,6 +102,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
           .formVersion,
         payload: { invite: token, consent: true, preferences },
       });
+    const legacyPending=async(id:string,user=guest,prefs=preferences,share=false)=>{
+      const keys=['availability','dietary','preferences','budget','travel'];const manual=Object.fromEntries(Object.entries(prefs).filter(([key])=>keys.includes(key)));
+      await store.transaction(async tx=>{const r=(await tx.getDinner<AppDinner>(id))!;r.state.consents[user.id]={active:true,at:now,version:'1.0'};r.state.joinRequests[user.id]={slot:null,name:user.name,at:now,preferences:manual};r.state.answerSharing??={};r.state.answerSharing[user.id]={enabled:share,at:now,version:'1.0'};await tx.saveDinner(r,r.revision);await tx.setSession(user.id,{currentDinnerId:id,pendingSetup:null,pendingOnboard:null});});return {ok:true as const,dinner:await service.dinner(user,id)};
+    };
     const approve = async (id: string, user = guest) =>
       service.mutate(owner, {
         requestId: "approve-" + user.id,
@@ -324,7 +328,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       const { id, token } = await create(3);
       await join(id, token);
       await approve(id);
-      await join(id, token, other);
+      await legacyPending(id,other);
       await store.transaction(async (tx) => {
         const r = (await tx.getDinner<AppDinner>(id))!,
           next = structuredClone(r.state);
@@ -716,7 +720,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
           },
         },
       };
-      const pending = await service.mutate(guest, joinInput);
+      const pending = await legacyPending(id,guest,joinInput.payload.preferences,true);
       expect(pending.dinner?.own.answerSharing).toBe(true);
       expect(pending.dinner?.sharedResponses).toEqual([]);
       expect(pending.dinner?.research).toBeUndefined();
@@ -789,7 +793,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
           durationMs: 12,
         });
       });
-      await join(id, token, other);
+      await legacyPending(id,other);
       const pendingView = await service.dinner(other, id);
       expect(pendingView.research).toBeUndefined();
       expect(pendingView.researchDetails).toBeUndefined();
@@ -953,9 +957,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         }),
       ).rejects.toMatchObject({ code: "REQUEST_REUSED" });
     });
-    it("stages consent and preferences until an organizer atomically approves a free place", async () => {
+    it("maintains legacy staged consent and preferences until an organizer approves a free place", async () => {
       const { id, token } = await create();
-      const pending = await join(id, token);
+      const pending = await legacyPending(id);
       expect(pending.dinner?.role).toBe("pending");
       expect(pending.dinner?.members).toEqual([]);
       let record = (await store.readDinner<AppDinner>(id))!;
@@ -1084,7 +1088,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         formVersion: (await service.dinner(owner, id)).formVersion,
         payload: preferences,
       });
-      await join(id, token);
+      await legacyPending(id);
       expect(
         (
           await db.pool.query(
@@ -1166,7 +1170,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
     });
     it("allows a pending guest to edit only their staged response before approval", async () => {
       const { id, token } = await create();
-      await join(id, token);
+      await legacyPending(id);
       const pending = await service.dinner(guest, id);
       const changed = await service.mutate(guest, {
         requestId: "pending-preference-edit",
@@ -1346,7 +1350,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
     });
     it("erases a pending response on stop and prevents approval of withdrawn staging", async () => {
       const { id, token } = await create();
-      await join(id, token);
+      await legacyPending(id);
       await service.mutate(guest, {
         requestId: "stop-pending-response",
         action: "stop",

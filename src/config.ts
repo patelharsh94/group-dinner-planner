@@ -18,6 +18,25 @@ export const ConfigSchema = z.object({
   API_KEY: z.string().min(32).optional(),
   MUSE_BASE_URL: z.url().default("https://api.meta.ai/v1"),
   MUSE_MODEL: z.string().default("muse-spark-1.3"),
+  RESERVATIONS_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  OPENTABLE_APPROVED_ACCESS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  OPENTABLE_CLIENT_ID: z.string().optional(),
+  OPENTABLE_CLIENT_SECRET: z.string().optional(),
+  OPENTABLE_BASE_URL: z
+    .url()
+    .refine(
+      (value) =>
+        new URL(value).protocol === "https:" &&
+        new URL(value).hostname.endsWith(".opentable.com"),
+    )
+    .optional(),
+  OPENTABLE_RESTAURANT_IDS: z.string().default("{}"),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   SUPPORT_CONTACT: z.string().min(3),

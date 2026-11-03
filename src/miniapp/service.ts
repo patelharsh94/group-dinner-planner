@@ -25,6 +25,7 @@ import {
   AppDinnerSchema,
   DinnerTitleSchema,
   authorized,
+  availabilityShared,
   canPlan,
   organizer,
   type AppDinner,
@@ -37,6 +38,8 @@ import {
   tokenHash,
 } from "../adapters/security.js";
 import { TokensSchema } from "../adapters/google.js";
+import { respondCoordination } from "../application/coordination.js";
+import type { ReservationService } from "../application/reservations.js";
 import type { Config } from "../config.js";
 import type { DinnerRecord, DinnerTx, PgStore } from "../persistence/store.js";
 import type {
@@ -49,6 +52,12 @@ import { stableHash } from "./hash.js";
 import { formVersion, invitation, project, summary } from "./view.js";
 const uid = () => randomBytes(12).toString("hex");
 const actions = [
+  "respondCoordination",
+  "reviewReservation",
+  "bookReservation",
+  "reportReservation",
+  "setAvailabilitySharing",
+  "resetInvitation",
   "renameDinner",
   "chooseDinner",
   "setAnswerSharing",
@@ -118,6 +127,7 @@ export const PreferencesSchema = ConstraintSchema.pick({
     dietary: ConstraintSchema.shape.dietary.unwrap().default([]),
     foodConfirmed: z.literal(true),
     shareAnswers: z.boolean().optional(),
+    shareAvailability: z.boolean().optional(),
     removeDietary: z.array(z.string().min(1).max(200)).max(32).optional(),
     removeLimits: z
       .array(z.enum(["budget", "travel"]))
@@ -157,6 +167,7 @@ function applyPreferences(
   const {
     foodConfirmed: _,
     shareAnswers: _sharing,
+    shareAvailability: _availabilitySharing,
     removeDietary: removals = [],
     removeLimits = [],
     ...patch
@@ -174,6 +185,7 @@ function stagedPreferences(
   const {
     foodConfirmed: _,
     shareAnswers: _sharing,
+    shareAvailability: _availabilitySharing,
     removeDietary: removals = [],
     removeLimits = [],
     ...patch
@@ -228,6 +240,32 @@ function reviewedAnswersMatch(
     );
   return stableHash(project(reviewed)) === stableHash(project(effective));
 }
+function setAvailability(
+  s: AppDinner,
+  user: string,
+  enabled: boolean,
+  now: string,
+): void {
+  s.availabilitySharing ??= {};
+  s.availabilitySharing[user] = { enabled, at: now, version: "1.0" };
+  if (!enabled && s.answerSharing?.[user]?.enabled)
+    setSharing(s, user, false, now);
+}
+function savedAvailabilityChoice(
+  s: AppDinner,
+  user: string,
+  raw: unknown,
+  now: string,
+): void {
+  const p = PreferencesSchema.parse(raw);
+  setAvailability(
+    s,
+    user,
+    p.shareAvailability ??
+      (p.shareAnswers === true && s.answerSharing?.[user]?.enabled === true),
+    now,
+  );
+}
 function setSharing(
   s: AppDinner,
   user: string,
@@ -242,6 +280,7 @@ export class MiniAppService {
     readonly store: PgStore,
     readonly coordinator: Coordinator,
     readonly config: Config,
+    readonly reservations?: ReservationService,
   ) {}
   private async started(tx: DinnerTx, user: string) {
     if (!(await tx.getSession(user)))
@@ -484,17 +523,27 @@ export class MiniAppService {
     }
     if (input.action === "join") {
       const p = z
-          .object({
-            invite: z.string().min(1).max(256),
-            consent: z.literal(true),
-            preferences: PreferencesSchema,
-          })
-          .strict()
-          .parse(payload),
-        id = await tx.lookupInvitation(tokenHash(p.invite));
-      const record = await this.record(tx, id ?? undefined),
-        s = AppDinnerSchema.parse(record.state);
-      if (record.endedAt)
+        .object({
+          invite: z.string().min(1).max(256).optional(),
+          consent: z.literal(true),
+          shareAvailability: z.boolean().optional(),
+          preferences: PreferencesSchema.optional(),
+        })
+        .strict()
+        .parse(payload);
+      const invited = p.invite
+        ? await tx.lookupInvitation(tokenHash(p.invite))
+        : input.dinnerId;
+      const record = await this.record(tx, invited ?? undefined),
+        s = AppDinnerSchema.parse(record.state),
+        pending = s.joinRequests[user];
+      if (!p.invite && (!pending || !s.consents[user]?.active))
+        throw new MiniAppFault(
+          "INVITATION",
+          403,
+          "Open a current dinner invitation first.",
+        );
+      if (record.endedAt || s.dinner.status === "cancelled")
         throw new MiniAppFault("ENDED", 409, "This dinner has ended.");
       if (input.dinnerId && input.dinnerId !== record.id)
         throw new MiniAppFault(
@@ -502,42 +551,73 @@ export class MiniAppService {
           400,
           "Invitation does not match this dinner.",
         );
-      if (input.formVersion !== formVersion(s, user))
+      if (
+        (p.preferences || input.formVersion) &&
+        input.formVersion !== formVersion(s, user)
+      )
         throw new MiniAppFault(
           "STALE_FORM",
           409,
-          "Dinner details changed. Reload the invitation before saving.",
+          "Dinner details changed. Reload before saving.",
         );
       if (authorized(s, user))
         return { ok: true, dinner: await project(tx, record, user, now) };
-      if (
-        !s.roster.some(
-          (r) => r.id === user || !s.dinner.members.some((m) => m.id === r.id),
-        )
-      )
+      const ownSlot = s.roster.findIndex((r) => r.id === user),
+        requested = pending?.slot;
+      const available = (slot: number) =>
+        slot >= 0 &&
+        !!s.roster[slot] &&
+        !s.dinner.members.some(
+          (m) => m.id === s.roster[slot].id && m.id !== user,
+        );
+      const slot = available(ownSlot)
+        ? ownSlot
+        : requested !== null && requested !== undefined && available(requested)
+          ? requested
+          : s.roster.findIndex((_, index) => available(index));
+      if (slot < 0)
         throw new MiniAppFault(
           "FULL",
           409,
           "This dinner has no available places.",
         );
-      const {
-        foodConfirmed: _,
-        shareAnswers: _sharing,
-        removeDietary: __,
-        removeLimits: ___,
-        ...preferences
-      } = p.preferences;
+      const reviewed = p.preferences
+        ? PreferencesSchema.parse(p.preferences)
+        : pending?.preferences;
+      const old = s.roster[slot].id;
+      s.roster[slot] = { id: user, name: actor.name };
+      s.dinner = updateSetup(
+        s.dinner,
+        s.dinner.organizerId,
+        {
+          intendedAttendees: s.dinner.setup.intendedAttendees.map((id) =>
+            id === old ? user : id,
+          ),
+        },
+        now,
+      );
+      s.dinner = approveMember(
+        s.dinner,
+        s.dinner.organizerId,
+        { id: user, consent: true, startedBot: true },
+        now,
+      );
       s.consents[user] = { active: true, at: now, version: "1.0" };
-      setSharing(s, user, p.preferences.shareAnswers === true, now);
-      s.joinRequests[user] = {
-        slot:
-          s.roster.findIndex((r) => r.id === user) >= 0
-            ? s.roster.findIndex((r) => r.id === user)
-            : null,
-        name: actor.name,
-        at: now,
-        preferences,
-      };
+      if (reviewed)
+        applyPreferences(s, user, { ...reviewed, foodConfirmed: true }, now);
+      const fullGrant =
+        (p.preferences
+          ? p.preferences.shareAnswers === true
+          : s.answerSharing?.[user]?.enabled === true) &&
+        reviewedAnswersMatch(reviewed, s.dinner.constraints[user]);
+      setSharing(s, user, fullGrant, now);
+      setAvailability(
+        s,
+        user,
+        p.shareAvailability ?? p.preferences?.shareAvailability ?? fullGrant,
+        now,
+      );
+      delete s.joinRequests[user];
       const next = await this.coordinator.save(tx, record, s);
       await tx.setSession(user, {
         currentDinnerId: record.id,
@@ -548,18 +628,19 @@ export class MiniAppService {
         tx,
         event,
         s.dinner.organizerId,
-        `${actor.name} requested to join your dinner. Open the dinner app to review.`,
+        `${actor.name} joined your dinner.`,
         {
           dinnerId: record.id,
           relatedUserIds: [user],
-          key: `${event}:join`,
+          key: `${event}:joined`,
           buttons: this.coordinator.plannerButtons({ dinner: record.id }),
         },
       );
+      if (ready(s)) await this.coordinator.scheduleResearch(tx, next, event);
       return {
         ok: true,
         dinner: await project(tx, next, user, now),
-        message: "Response saved. Waiting for organizer approval.",
+        message: "You joined the dinner. Add your own response next.",
       };
     }
     let record = await this.record(tx, input.dinnerId),
@@ -572,6 +653,43 @@ export class MiniAppService {
         pendingOnboard: null,
       });
       return { ok: true, dinner: view };
+    }
+    if (input.action === "setAvailabilitySharing") {
+      const { enabled } = z
+        .object({ enabled: z.boolean() })
+        .strict()
+        .parse(payload);
+      if (!s.dinner.members.some((m) => m.id === user) && !s.joinRequests[user])
+        throw new MiniAppFault(
+          "MEMBERSHIP",
+          403,
+          "This dinner is unavailable.",
+        );
+      if (enabled) {
+        if (record.endedAt || s.dinner.status === "cancelled")
+          throw new MiniAppFault("ENDED", 409, "This dinner has ended.");
+        if (!s.consents[user]?.active)
+          throw new MiniAppFault(
+            "CONSENT",
+            403,
+            "Current consent is required.",
+          );
+        if (input.formVersion !== formVersion(s, user))
+          throw new MiniAppFault(
+            "STALE_FORM",
+            409,
+            "Review your availability again before sharing.",
+          );
+      }
+      setAvailability(s, user, enabled, now);
+      record = await this.coordinator.save(tx, record, s);
+      if (
+        !authorized(s, user) &&
+        !s.joinRequests[user] &&
+        s.dinner.organizerId !== user
+      )
+        return { ok: true, message: "Your availability is private." };
+      return { ok: true, dinner: await project(tx, record, user, now) };
     }
     if (input.action === "setAnswerSharing") {
       const { enabled } = z
@@ -701,6 +819,7 @@ export class MiniAppService {
           ),
         now,
       );
+      savedAvailabilityChoice(s, user, payload, now);
       record = await this.coordinator.save(tx, record, s);
       return { ok: true, dinner: await project(tx, record, user, now) };
     }
@@ -731,6 +850,80 @@ export class MiniAppService {
       schedule = false,
       activatedCalendar = false;
     switch (input.action) {
+      case "respondCoordination": {
+        const p = z
+          .object({
+            suggestionId: z.string().min(1),
+            response: z.enum(["accept", "decline"]),
+          })
+          .strict()
+          .parse(payload);
+        s = respondCoordination(s, user, p, now);
+        changed = true;
+        schedule = true;
+        break;
+      }
+      case "reviewReservation": {
+        if (!this.reservations)
+          throw new MiniAppFault(
+            "RESERVATION",
+            503,
+            "Reservation management is unavailable.",
+          );
+        await this.reservations.review(
+          tx,
+          record,
+          user,
+          z.object({ version: z.number().int().positive() }).parse(payload),
+          now,
+        );
+        break;
+      }
+      case "bookReservation": {
+        if (!this.reservations)
+          throw new MiniAppFault(
+            "RESERVATION",
+            503,
+            "Reservation management is unavailable.",
+          );
+        await this.reservations.book(
+          tx,
+          record,
+          user,
+          z
+            .object({
+              version: z.number().int().positive(),
+              reviewId: z.string(),
+              consent: z.literal(true),
+              contact: z.unknown(),
+            })
+            .parse(payload),
+          now,
+        );
+        break;
+      }
+      case "reportReservation": {
+        if (!this.reservations)
+          throw new MiniAppFault(
+            "RESERVATION",
+            503,
+            "Reservation management is unavailable.",
+          );
+        await this.reservations.report(
+          tx,
+          record,
+          user,
+          z
+            .object({
+              version: z.number().int().positive(),
+              confirmed: z.literal(true),
+              reference: z.string().optional(),
+            })
+            .parse(payload),
+          now,
+        );
+        break;
+      }
       case "renameDinner": {
         requireOwner(s, user);
         const { title } = z
@@ -753,6 +946,7 @@ export class MiniAppService {
             ),
           now,
         );
+        savedAvailabilityChoice(s, user, payload, now);
         changed = true;
         schedule = true;
         break;
@@ -790,6 +984,7 @@ export class MiniAppService {
             .object({ userId: z.string().min(1) })
             .parse(payload),
           request = s.joinRequests[userId];
+        if (!request && authorized(s, userId)) break;
         if (
           !request ||
           !s.consents[userId]?.active ||
@@ -967,6 +1162,21 @@ export class MiniAppService {
         s.dinner = setReminderConsent(s.dinner, user, p.enabled);
         changed = true;
         break;
+      }
+      case "resetInvitation": {
+        requireOwner(s, user);
+        await tx.revokeInvitations(record.id);
+        const token = randomToken();
+        await tx.createInvitation(
+          tokenHash(token),
+          record.id,
+          new Date(Date.parse(now) + 14 * 86400000),
+        );
+        return {
+          ok: true,
+          dinner: await project(tx, record, user, now),
+          invitationUrl: this.inviteUrl(token),
+        };
       }
       case "invite": {
         requireOwner(s, user);

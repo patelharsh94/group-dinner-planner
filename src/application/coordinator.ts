@@ -1,3 +1,4 @@
+import { ensureCoordination } from "./coordination.js";
 import { researchGuidance, type ResearchCode } from "./research.js";
 import { researchVersion } from "./research-version.js";
 import type { TelegramButton } from "../adapters/telegram.js";
@@ -637,7 +638,7 @@ export class Coordinator {
         new Date(Date.parse(now) + 14 * 86400000),
       );
       await dinnerReply(
-        `Share this dinner-specific invitation: https://t.me/${this.config.TELEGRAM_BOT_USERNAME}?start=${token}\nEach friend must start the bot, consent and receive your approval.`,
+        `Share this dinner-specific invitation: https://t.me/${this.config.TELEGRAM_BOT_USERNAME}?start=${token}\nEach friend must start the bot and join through the invitation.`,
       );
       return;
     }
@@ -1388,7 +1389,33 @@ export class Coordinator {
     )
       return;
     if (!candidateSlots(s.dinner, this.now()).length) {
-      await this.blockedResearch(tx, record, eventId, "NO_COMMON_TIME");
+      if (
+        s.dinner.members.length !== s.roster.length ||
+        s.dinner.members.some(
+          (m) => !s.dinner.constraints[m.id]?.availability?.length,
+        )
+      )
+        return;
+      const next = ensureCoordination(s, this.now());
+      if (
+        JSON.stringify(next.coordination) !== JSON.stringify(s.coordination)
+      ) {
+        await this.save(tx, record, next);
+        for (const m of next.dinner.members)
+          if (authorized(next, m.id))
+            await this.message(
+              tx,
+              eventId,
+              m.id,
+              next.coordination?.status === "escalated"
+                ? "No common time yet after two rounds. Open the planner to adjust dates."
+                : "Muse found possible times. Open the planner to say which works for you.",
+              {
+                dinnerId: record.id,
+                buttons: this.plannerButtons({ dinner: record.id }),
+              },
+            );
+      }
       return;
     }
     if (!this.config.MODEL_API_KEY) {
@@ -1423,6 +1450,42 @@ export class Coordinator {
       s.dinner.organizerId,
       record.revision,
       { researchVersion: researchVersion(s) },
+    );
+  }
+  async scheduleVerification(
+    tx: DinnerTx,
+    record: DinnerRecord<AppDinner>,
+    eventId: string,
+    pass: number,
+  ): Promise<void> {
+    if (
+      !this.config.MODEL_API_KEY ||
+      record.endedAt ||
+      !record.state.dinner.activeVersion
+    )
+      return;
+    if (
+      !(await tx.consumeUsage(
+        "dinner-research",
+        record.id,
+        this.now().slice(0, 10),
+        this.config.MAX_RESEARCH_PER_DINNER_PER_DAY,
+      ))
+    )
+      return;
+    await this.job(
+      tx,
+      eventId,
+      "research",
+      record.id,
+      record.organizerId,
+      record.revision,
+      {
+        researchVersion: researchVersion(record.state),
+        verificationOnly: true,
+        pass,
+        version: record.state.dinner.activeVersion,
+      },
     );
   }
   private async blockedResearch(
@@ -1557,6 +1620,7 @@ export class Coordinator {
         continue;
       }
       if (s.answerSharing) delete s.answerSharing[user];
+      if (s.availabilitySharing) delete s.availabilitySharing[user];
       if (s.consents[user]) s.consents[user].active = false;
       // Unapproved answers must not remain eligible for later approval after opt-out.
       delete s.joinRequests[user];

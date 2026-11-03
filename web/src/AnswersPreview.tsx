@@ -10,40 +10,44 @@ export function AnswersPreview({
   timezone,
   currency,
   foodAnswered = true,
+  includeAvailability = true,
 }: {
   answers: ManualAnswers;
   timezone: string;
   currency: string;
   foodAnswered?: boolean;
+  includeAvailability?: boolean;
 }) {
   return (
     <dl className="answers-list">
-      <div>
-        <dt>Availability</dt>
-        <dd>
-          {answers.availability?.length ? (
-            <ul>
-              {answers.availability.map((range, index) => {
-                const start = DateTime.fromISO(range.start).setZone(timezone),
-                  end = DateTime.fromISO(range.end).setZone(timezone);
-                return (
-                  <li key={index}>
-                    {start.toFormat("ccc, LLL d · h:mm a")}–
-                    {end.toFormat(
-                      start.toISODate() === end.toISODate()
-                        ? "h:mm a"
-                        : "ccc, LLL d · h:mm a",
-                    )}{" "}
-                    ({timezone.replaceAll("_", " ")})
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            "No available windows saved yet."
-          )}
-        </dd>
-      </div>
+      {includeAvailability && (
+        <div>
+          <dt>Availability</dt>
+          <dd>
+            {answers.availability?.length ? (
+              <ul>
+                {answers.availability.map((range, index) => {
+                  const start = DateTime.fromISO(range.start).setZone(timezone),
+                    end = DateTime.fromISO(range.end).setZone(timezone);
+                  return (
+                    <li key={index}>
+                      {start.toFormat("ccc, LLL d · h:mm a")}–
+                      {end.toFormat(
+                        start.toISODate() === end.toISODate()
+                          ? "h:mm a"
+                          : "ccc, LLL d · h:mm a",
+                      )}{" "}
+                      ({timezone.replaceAll("_", " ")})
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              "No available windows saved yet."
+            )}
+          </dd>
+        </div>
+      )}
       <div>
         <dt>Food requirements</dt>
         <dd>

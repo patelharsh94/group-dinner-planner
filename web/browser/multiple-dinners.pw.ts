@@ -164,7 +164,7 @@ test("multiple dinners: grouped home, metadata rename, and late previous-dinner 
   await expect(
     page.getByRole("heading", { name: "Friday, renamed" }),
   ).toBeVisible();
-  await expect(page.getByText("Plan 7", { exact: true })).toBeVisible();
+  await expect(page.getByText("Plan 7", { exact: true }).first()).toBeVisible();
   await expect(
     page.getByText("2 people, one agreed plan.", { exact: true }),
   ).toBeVisible();
@@ -231,8 +231,6 @@ test("multiple dinners: explicit selection/create/invitation deep links take pre
   await expect(
     page.getByRole("heading", { name: "Neighborhood supper" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Add my answers" }),
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Join dinner" })).toBeVisible();
   expect(f.actions.length).toBe(beforeInvite);
 });

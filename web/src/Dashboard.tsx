@@ -1,3 +1,5 @@
+import { GroupChoice, VerificationStatus } from "./GroupChoice";
+import { ReservationPanel } from "./ReservationPanel";
 import { dinnerName } from "./dinners";
 import { AnswersPreview } from "./AnswersPreview";
 import { ResearchStatus } from "./ResearchStatus";
@@ -78,6 +80,73 @@ export function Dashboard({
           {owner ? "Organizing" : "Dinner together"}
         </div>
         <h1 className="dinner-title">{dinnerName(d)}</h1>
+        {d.agreement && (
+          <GroupChoice
+            dinner={d}
+            actorId={actorId}
+            busy={busy}
+            onAction={onAction}
+            onChange={() => setChange(true)}
+            onCalendar={onCalendar}
+          />
+        )}
+        <VerificationStatus dinner={d} />
+        <ReservationPanel
+          dinner={d}
+          busy={busy}
+          error={error}
+          onAction={onAction}
+        />
+        {d.coordination && d.coordination.status !== "resolved" && (
+          <section className="card form-card">
+            <h2>
+              {d.coordination.status === "escalated"
+                ? "No common time yet"
+                : "Find a time together"}
+            </h2>
+            <p>
+              Muse suggests these times. Accepting adds the time to your
+              availability.
+            </p>
+            {d.coordination.suggestions.map((slot) => (
+              <div key={slot.id}>
+                <p>
+                  {planTime(slot.start, slot.end, d.setup.timezone)} ·{" "}
+                  {slot.available}/{slot.required} currently available
+                </p>
+                {slot.response ? (
+                  <p>{slot.response}</p>
+                ) : (
+                  <>
+                    <Button
+                      disabled={busy}
+                      onClick={() =>
+                        void onAction("respondCoordination", {
+                          suggestionId: slot.id,
+                          response: "accept",
+                        })
+                      }
+                    >
+                      This works
+                    </Button>
+                    <Button
+                      disabled={busy}
+                      onClick={() =>
+                        void onAction("respondCoordination", {
+                          suggestionId: slot.id,
+                          response: "decline",
+                        })
+                      }
+                    >
+                      Cannot make this
+                    </Button>
+                  </>
+                )}
+              </div>
+            ))}
+            <Button onClick={onEdit}>Suggest another time</Button>
+          </section>
+        )}
         <div className="context-pill">
           <Icon name="calendar" size={16} />
           {d.city} · {dateLabel(d.windowStart)}–{dateLabel(d.windowEnd)}
@@ -138,12 +207,23 @@ export function Dashboard({
               <span className="pulse-dot" />
               Answers saved
             </span>
-            <h2>The organizer will let you in.</h2>
+            <h2>Complete joining this dinner.</h2>
             <p className="muted">
-              Your seat is waiting for approval. Your answers are saved. Any
-              chosen sharing starts only after approval, and you can still
-              update your answers.
+              Your answers are saved. Join now to take your place and share your
+              manual availability with dinner members. Calendar busy times
+              remain private.
             </p>
+            <Button
+              busy={busy}
+              onClick={() =>
+                void onAction("join", {
+                  consent: true,
+                  shareAvailability: true,
+                })
+              }
+            >
+              Join and share my availability
+            </Button>
             <Button variant="secondary" onClick={onEdit}>
               Edit my answers
             </Button>
@@ -222,7 +302,7 @@ export function Dashboard({
                 </Button>
               )}
             </section>
-            {owner && (d.pendingRequests?.length ?? 0) > 0 && (
+            {false && owner && (d.pendingRequests?.length ?? 0) > 0 && (
               <section className="card form-card">
                 <h2>A friend is at the door</h2>
                 <p className="muted small">
@@ -417,40 +497,46 @@ export function Dashboard({
                         )}
                       </div>
                     )}
-                    {canParticipate && index === 0 && d.status !== "agreed" && (
-                      <div className="plan-actions">
-                        {ownMember?.confirmed ? (
-                          <div className="confirmed-label">
-                            <Icon name="check" size={18} />
-                            You're in for this version
-                          </div>
-                        ) : (
+                    {!d.agreement &&
+                      canParticipate &&
+                      index === 0 &&
+                      d.status !== "agreed" && (
+                        <div className="plan-actions">
+                          {ownMember?.confirmed ? (
+                            <div className="confirmed-label">
+                              <Icon name="check" size={18} />
+                              You're in for this version
+                            </div>
+                          ) : (
+                            <Button
+                              busy={busy}
+                              disabled={
+                                !(
+                                  d.canConfirm ??
+                                  option.ownChecks?.status === "feasible"
+                                ) ||
+                                d.own.disputeOpen ||
+                                d.status === "escalated"
+                              }
+                              className="full"
+                              onClick={() =>
+                                void onAction("confirm", {
+                                  version: d.activeVersion,
+                                })
+                              }
+                            >
+                              This works for me <Icon name="check" size={18} />
+                            </Button>
+                          )}
                           <Button
-                            busy={busy}
-                            disabled={
-                              option.ownChecks?.status !== "feasible" ||
-                              d.own.disputeOpen ||
-                              d.status === "escalated"
-                            }
+                            variant="quiet"
                             className="full"
-                            onClick={() =>
-                              void onAction("confirm", {
-                                version: d.activeVersion,
-                              })
-                            }
+                            onClick={() => setChange(true)}
                           >
-                            This works for me <Icon name="check" size={18} />
+                            I need a change
                           </Button>
-                        )}
-                        <Button
-                          variant="quiet"
-                          className="full"
-                          onClick={() => setChange(true)}
-                        >
-                          I need a change
-                        </Button>
-                      </div>
-                    )}
+                        </div>
+                      )}
                     {owner &&
                       canParticipate &&
                       index > 0 &&

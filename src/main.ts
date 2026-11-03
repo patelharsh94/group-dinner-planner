@@ -1,3 +1,5 @@
+import { OpenTableProvider } from "./adapters/opentable.js";
+import { ReservationService } from "./application/reservations.js";
 import { Pool } from "pg";
 import { loadConfig } from "./config.js";
 import { PgStore } from "./persistence/store.js";
@@ -28,17 +30,31 @@ const muse = config.MODEL_API_KEY
     })
   : undefined;
 const coordinator = new Coordinator(config, google);
+const reservations = new ReservationService(
+  store,
+  new OpenTableProvider({
+    enabled: config.RESERVATIONS_ENABLED,
+    approved: config.OPENTABLE_APPROVED_ACCESS,
+    clientId: config.OPENTABLE_CLIENT_ID,
+    clientSecret: config.OPENTABLE_CLIENT_SECRET,
+    baseUrl: config.OPENTABLE_BASE_URL,
+  }),
+  config.CREDENTIAL_ENCRYPTION_KEY,
+  JSON.parse(config.OPENTABLE_RESTAURANT_IDS),
+);
 const worker = new Worker(
   store,
   coordinator,
   new TelegramTransport(config.TELEGRAM_BOT_TOKEN),
   muse,
   google,
+  reservations,
 );
 const app = createServer({
   store,
   config,
   coordinator,
+  reservations,
   oauthCallback: googleCallback(store, coordinator, google),
 });
 await pool.query("SELECT 1 FROM dinners LIMIT 1");

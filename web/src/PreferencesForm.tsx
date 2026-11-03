@@ -1,4 +1,8 @@
 import { useState } from "react";
+import {
+  AvailabilityComparison,
+  type SharedSchedule,
+} from "./AvailabilityComparison";
 import { AnswersPreview, type ManualAnswers } from "./AnswersPreview";
 import { DateTime } from "luxon";
 import type { PreferencesInput } from "../../src/miniapp/contracts";
@@ -29,6 +33,9 @@ interface Props {
   initial?: Constraints;
   foodConfirmed?: boolean;
   answerSharing?: boolean;
+  availabilitySharing?: boolean;
+  sharedAvailability?: SharedSchedule[];
+  actorId?: string;
   needsConsent?: boolean;
   busy: boolean;
   error?: string;
@@ -96,6 +103,9 @@ export function PreferencesForm({
   initial,
   foodConfirmed = false,
   answerSharing = false,
+  availabilitySharing = false,
+  sharedAvailability,
+  actorId,
   needsConsent = false,
   busy,
   error,
@@ -105,6 +115,8 @@ export function PreferencesForm({
   // These drafts intentionally initialize once. Polling never replaces unsaved answers.
   const [baseline] = useState(initial);
   const [shareAnswers, setShareAnswers] = useState(answerSharing);
+  const [shareAvailability, setShareAvailability] =
+    useState(availabilitySharing);
   const [windows, setWindows] = useState(() =>
     initialWindows(initial, context.timezone),
   );
@@ -308,6 +320,7 @@ export function PreferencesForm({
         availability,
         foodConfirmed: true,
         shareAnswers,
+        shareAvailability,
         dietary,
         preferences: preferences
           .split(",")
@@ -393,9 +406,10 @@ export function PreferencesForm({
           for you?
         </h1>
         <p className="intro">
-          Your answers stay private unless you choose to share them with
-          approved dinner members. Calendar busy times and private chats are
-          never shared.
+          Choose your available windows and compare the times members have
+          shared. Food, budget and travel stay private unless you separately
+          choose to share them. Calendar busy times and private chats are never
+          shared.
         </p>
         <div className="context-pill">
           <Icon name="calendar" size={16} />
@@ -797,6 +811,31 @@ export function PreferencesForm({
               )}
             </div>
           </details>
+          {sharedAvailability && (
+            <AvailabilityComparison
+              schedules={sharedAvailability}
+              ownDraft={previewAnswers.availability ?? []}
+              actorId={actorId}
+              timezone={context.timezone}
+              durationMinutes={context.durationMinutes}
+            />
+          )}
+          <section className="card form-card" aria-label="Availability sharing">
+            <h2>Your manual availability</h2>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={shareAvailability}
+                onChange={(event) => setShareAvailability(event.target.checked)}
+              />
+              <span>Share my manual availability with dinner members.</span>
+            </label>
+            <p className="field-hint">
+              Only the available windows you enter are shared. Calendar busy
+              times stay private. Existing private availability is not shared
+              unless you turn this on.
+            </p>
+          </section>
           <section
             className="card form-card"
             aria-label="Answers sharing preview"
@@ -814,6 +853,7 @@ export function PreferencesForm({
                 timezone={context.timezone}
                 currency={context.currency}
                 foodAnswered={!!foodChoice}
+                includeAvailability={false}
               />
             </details>
             <label className="check-label">
@@ -822,7 +862,10 @@ export function PreferencesForm({
                 checked={shareAnswers}
                 onChange={(event) => setShareAnswers(event.target.checked)}
               />
-              <span>Share these answers with approved dinner members.</span>
+              <span>
+                Share these answers with approved dinner members: food,
+                preferences, budget and travel.
+              </span>
             </label>
             <p className="field-hint">
               Calendar busy times, private chats and staff conversations are

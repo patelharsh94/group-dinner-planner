@@ -1,9 +1,17 @@
+import { coordinationView } from "../application/coordination.js";
+import { getReservation } from "../application/reservations.js";
 import { researchMessage } from "../application/research.js";
 import { stableHash } from "./hash.js";
-import { evaluateFeasibility, type Constraints } from "../domain/index.js";
+import {
+  evaluateFeasibility,
+  confirmVersion,
+  type Constraints,
+} from "../domain/index.js";
 import {
   authorized,
+  availabilityShared,
   organizer,
+  canPlan,
   sharedPlan,
   type AppDinner,
 } from "../application/model.js";
@@ -40,6 +48,7 @@ export function formVersion(s: AppDinner, user: string): string {
     membership: s.dinner.members.find((m) => m.id === user) ?? null,
     consent: s.consents[user]?.active ?? false,
     answerSharing: s.answerSharing?.[user],
+    availabilitySharing: s.availabilitySharing?.[user],
   });
 }
 export function summary(
@@ -122,6 +131,77 @@ export async function project(
   const proposal = d.proposals.find((p) => p.version === d.activeVersion),
     stored = await tx.getCalendarConnection(record.id, user);
   const full = isMember;
+  const required = d.members.filter((m) => m.required),
+    confirmed = required.filter(
+      (m) =>
+        d.activeVersion !== null && d.confirmations[m.id] === d.activeVersion,
+    ).length;
+  const selected = proposal?.options[proposal.selectedIndex],
+    feasibility = selected
+      ? evaluateFeasibility(d, selected, now).status
+      : null;
+  let canConfirm = false;
+  if (
+    full &&
+    d.activeVersion !== null &&
+    canPlan(s) &&
+    required.some((m) => m.id === user)
+  ) {
+    try {
+      confirmVersion(d, user, d.activeVersion, now);
+      canConfirm = true;
+    } catch {}
+  }
+  const verificationStatus =
+    feasibility === "feasible"
+      ? "ready"
+      : feasibility === "infeasible"
+        ? "action_needed"
+        : "pending";
+  const nextAction = record.endedAt
+    ? undefined
+    : !full
+      ? {
+          label: "Join dinner",
+          message: "Complete your invitation to join this dinner.",
+          action: "join" as const,
+        }
+      : !own.availability?.length
+        ? {
+            label: "Add your response",
+            message: "Choose when you are available and any requirements.",
+            action: "savePreferences" as const,
+          }
+        : d.disputes.some((x) => x.memberId === user && x.open)
+          ? {
+              label: "Resolve your change request",
+              message: "Close your objection once it has been addressed.",
+              action: "resolve" as const,
+            }
+          : canConfirm && d.confirmations[user] !== d.activeVersion
+            ? {
+                label: "This works for me",
+                message: "Agree to this exact dinner option.",
+                action: "confirm" as const,
+              }
+            : d.status === "agreed"
+              ? {
+                  label: "Review the reservation",
+                  message:
+                    "Everyone has agreed. A reservation still needs its own confirmation.",
+                }
+              : !proposal && organizer(s, user)
+                ? {
+                    label: "Find dinner options",
+                    message:
+                      "Collect responses, then find an option for the group.",
+                    action: "research" as const,
+                  }
+                : undefined;
+
+  const reservation = full
+    ? await getReservation(tx, record.id, d.activeVersion ?? undefined)
+    : undefined;
   const research = full ? await tx.getLatestResearchAttempt(record.id) : null;
   const work = await tx.client.query(
     "SELECT EXISTS(SELECT 1 FROM outbox WHERE dinner_id=$1 AND kind='research' AND status IN ('pending','sending')) AS pending",
@@ -129,6 +209,52 @@ export async function project(
   );
   return {
     ...summary(record, user),
+    ...(reservation ? { reservation } : {}),
+    ...(full ? { coordination: coordinationView(s, user) } : {}),
+    agreement: {
+      version: full ? d.activeVersion : null,
+      confirmed: full ? confirmed : 0,
+      required: full ? required.length : 0,
+      agreed: full && d.status === "agreed",
+    },
+    verification: {
+      status: verificationStatus,
+      checks: [
+        {
+          kind: "requirements",
+          status: verificationStatus,
+          message: !selected
+            ? "Dinner option checks will appear after an option is proposed."
+            : feasibility === "feasible"
+              ? "The current checks support this option."
+              : feasibility === "infeasible"
+                ? "A known requirement conflicts with this option."
+                : "Some venue details still need verification. Agreement does not confirm a reservation.",
+        },
+      ],
+    },
+    ...(nextAction ? { nextAction } : {}),
+    canConfirm,
+    sharedAvailability: full
+      ? d.members
+          .filter((m) => authorized(s, m.id))
+          .map((m) => {
+            const availability = d.constraints[m.id]?.availability,
+              shared = availabilityShared(s, m.id);
+            return {
+              userId: m.id,
+              name: s.roster.find((r) => r.id === m.id)?.name ?? "Attendee",
+              status: !availability?.length
+                ? "not-submitted"
+                : shared
+                  ? "shared"
+                  : "private",
+              ...(availability?.length && shared
+                ? { availability: structuredClone(availability) }
+                : {}),
+            };
+          })
+      : [],
     formVersion: formVersion(s, user),
     researchPending: full && work.rows[0].pending,
     ...(research
@@ -194,6 +320,7 @@ export async function project(
       : [],
     own: {
       answerSharing: s.answerSharing?.[user]?.enabled === true,
+      availabilitySharing: availabilityShared(s, user),
       constraints,
       reminders: d.members.find((m) => m.id === user)?.remindersOptIn ?? false,
       consent: s.consents[user]?.active ?? false,
@@ -229,7 +356,9 @@ export async function project(
     },
     options: full
       ? (proposal?.options ?? []).map((option, index) => {
-          const venue = proposal!.venues.find((v) => v.id === option.venueId);
+          const venue =
+            d.venues.find((v) => v.id === option.venueId) ??
+            proposal!.venues.find((v) => v.id === option.venueId);
           const feasibility = evaluateFeasibility(d, option, now);
           const reasons = feasibility.reasons
             .filter(

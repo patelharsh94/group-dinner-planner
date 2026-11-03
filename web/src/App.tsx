@@ -12,6 +12,7 @@ import { CreateDinner } from "./CreateDinner";
 import { Dashboard } from "./Dashboard";
 import { PreferencesForm, type ResponseContext } from "./PreferencesForm";
 import { applyTelegramTheme, getTelegram, invitationToken } from "./telegram";
+import { AvailabilityTimes } from "./AvailabilityComparison";
 import { DinnerList } from "./DinnerList";
 import { dinnerName, dinnerSummary, ownedActiveCount } from "./dinners";
 import { dateLabel } from "./time";
@@ -22,6 +23,7 @@ interface ResponseDraft {
   initial?: DinnerView["own"]["constraints"];
   foodConfirmed?: boolean;
   answerSharing?: boolean;
+  availabilitySharing?: boolean;
   formVersion?: string;
   dinnerId: string;
   invite?: string;
@@ -126,6 +128,7 @@ export function App() {
     [notice, setNotice] = useState("");
   const [sharingPreview, setSharingPreview] = useState<{
     answers: ManualAnswers;
+    kind?: "availability" | "other";
     formVersion: string;
     timezone: string;
     currency: string;
@@ -136,6 +139,7 @@ export function App() {
     title: string;
     formVersion: string;
   }>();
+  const [joinConsent, setJoinConsent] = useState(false);
   const [openingId, setOpeningId] = useState<string>();
   const choiceQueue = useRef<Promise<void>>(Promise.resolve());
   const viewRequest = useRef(0),
@@ -185,6 +189,7 @@ export function App() {
     setSharingPreview(undefined);
     setSharingConfirmed(false);
     setRenameDraft(undefined);
+    setJoinConsent(false);
     setError("");
     setNotice("");
   }
@@ -349,6 +354,7 @@ export function App() {
       initial: view.own.constraints,
       foodConfirmed: view.own.foodConfirmed,
       answerSharing: view.own.answerSharing,
+      availabilitySharing: view.own.availabilitySharing ?? false,
       formVersion: view.formVersion,
       dinnerId: view.id,
     });
@@ -390,6 +396,7 @@ export function App() {
   }
   const mutate = async (
     input: Omit<MutationEnvelope, "requestId">,
+    onDinner?: (view: DinnerView) => void,
   ): Promise<boolean> => {
     if (!api || busy) return false;
     setBusy(true);
@@ -405,7 +412,10 @@ export function App() {
         input.action !== "stop"
       )
         return false;
-      if (result.dinner) acceptView(result.dinner);
+      if (result.dinner) {
+        acceptView(result.dinner);
+        onDinner?.(result.dinner);
+      }
       if (result.message) setNotice(result.message);
       if (result.invitationUrl)
         telegram?.openTelegramLink(
@@ -440,12 +450,15 @@ export function App() {
     action: MutationEnvelope["action"],
     payload?: unknown,
   ) =>
-    mutate({
-      action,
-      dinnerId: dinner?.id,
-      formVersion: dinner?.formVersion,
-      payload,
-    });
+    mutate(
+      {
+        action,
+        dinnerId: dinner?.id,
+        formVersion: dinner?.formVersion,
+        payload,
+      },
+      action === "join" ? edit : undefined,
+    );
   async function savePreferences(preferences: PreferencesInput) {
     if (!response) return;
     const success = await mutate({
@@ -573,6 +586,13 @@ export function App() {
         initial={response.initial}
         foodConfirmed={response.foodConfirmed}
         answerSharing={response.answerSharing}
+        availabilitySharing={response.availabilitySharing}
+        actorId={bootstrap.actor.id}
+        sharedAvailability={
+          dinner?.id === response.dinnerId
+            ? (dinner.sharedAvailability ?? [])
+            : []
+        }
         needsConsent={!!response.invite}
         busy={busy}
         error={error}
@@ -675,17 +695,29 @@ export function App() {
                   className="form-stack"
                   aria-label="Confirm answer sharing"
                 >
-                  <h2>Share these answers?</h2>
+                  <h2>
+                    {sharingPreview.kind === "availability"
+                      ? "Share these available times?"
+                      : "Share these answers?"}
+                  </h2>
                   <p className="muted small">
-                    Approved members of this dinner will see all the answers
-                    below, including your travel starting point. Calendar busy
-                    times and private chats are excluded.
+                    {sharingPreview.kind === "availability"
+                      ? "Dinner members will see the manual available windows below. Calendar busy times are excluded."
+                      : "Dinner members will see the food, budget, preferences and travel answers below, including your starting point. Manual availability has a separate control. Calendar busy times and private chats are excluded."}
                   </p>
-                  <AnswersPreview
-                    answers={sharingPreview.answers}
-                    timezone={sharingPreview.timezone}
-                    currency={sharingPreview.currency}
-                  />
+                  {sharingPreview.kind === "availability" ? (
+                    <AvailabilityTimes
+                      intervals={sharingPreview.answers.availability ?? []}
+                      timezone={sharingPreview.timezone}
+                    />
+                  ) : (
+                    <AnswersPreview
+                      answers={sharingPreview.answers}
+                      timezone={sharingPreview.timezone}
+                      currency={sharingPreview.currency}
+                      includeAvailability={false}
+                    />
+                  )}
                   <label className="check-label">
                     <input
                       type="checkbox"
@@ -695,7 +727,9 @@ export function App() {
                       }
                     />
                     <span>
-                      I want approved members to see exactly these answers.
+                      {sharingPreview.kind === "availability"
+                        ? "I want dinner members to see these manual available times."
+                        : "I want approved members to see exactly these answers."}
                     </span>
                   </label>
                   <Button
@@ -704,7 +738,10 @@ export function App() {
                     onClick={async () => {
                       if (
                         await mutate({
-                          action: "setAnswerSharing",
+                          action:
+                            sharingPreview.kind === "availability"
+                              ? "setAvailabilitySharing"
+                              : "setAnswerSharing",
                           dinnerId: dinner.id,
                           formVersion: sharingPreview.formVersion,
                           payload: { enabled: true },
@@ -715,7 +752,9 @@ export function App() {
                       }
                     }}
                   >
-                    Share my answers
+                    {sharingPreview.kind === "availability"
+                      ? "Share my availability"
+                      : "Share my answers"}
                   </Button>
                   <Button
                     variant="quiet"
@@ -771,6 +810,19 @@ export function App() {
                     !dinner.ended &&
                     dinner.status !== "cancelled" && (
                       <>
+                        <p className="field-hint">
+                          Resetting the invitation replaces old links. Existing
+                          members stay joined.
+                        </p>
+                        <Button
+                          variant="secondary"
+                          busy={busy}
+                          onClick={() =>
+                            void dinnerAction("resetInvitation", {})
+                          }
+                        >
+                          Reset invitation link
+                        </Button>
                         <Button
                           variant="secondary"
                           onClick={() => {
@@ -919,13 +971,70 @@ export function App() {
                   )}
                   <section
                     className="settings-section"
+                    aria-label="Availability sharing settings"
+                  >
+                    <h3>Manual availability sharing</h3>
+                    <p className="muted small">
+                      {dinner.own.availabilitySharing
+                        ? "Your entered available windows are visible to dinner members."
+                        : "Your manual availability is private. Calendar busy times are always private."}
+                    </p>
+                    {dinner.own.availabilitySharing ? (
+                      <Button
+                        variant="secondary"
+                        busy={busy}
+                        onClick={() =>
+                          void mutate({
+                            action: "setAvailabilitySharing",
+                            dinnerId: dinner.id,
+                            payload: { enabled: false },
+                          })
+                        }
+                      >
+                        Make my availability private
+                      </Button>
+                    ) : (
+                      !dinner.ended &&
+                      dinner.status !== "cancelled" &&
+                      dinner.own.consent &&
+                      (dinner.role === "organizer" ||
+                        dinner.role === "member") && (
+                        <Button
+                          variant="secondary"
+                          disabled={
+                            !dinner.own.constraints.availability?.length
+                          }
+                          onClick={() => {
+                            setSharingPreview({
+                              kind: "availability",
+                              answers: {
+                                availability: structuredClone(
+                                  dinner.own.constraints.availability,
+                                ),
+                              },
+                              formVersion: dinner.formVersion,
+                              timezone: dinner.setup.timezone,
+                              currency: dinner.setup.currency,
+                            });
+                            setSharingConfirmed(false);
+                            setError("");
+                          }}
+                        >
+                          Review &amp; share my availability
+                        </Button>
+                      )
+                    )}
+                  </section>
+                  <div className="divider" />
+                  <section
+                    className="settings-section"
                     aria-label="Answer sharing settings"
                   >
                     <h3>Your answer sharing</h3>
                     <p className="muted small">
                       {dinner.own.answerSharing
-                        ? "Your manual form answers are shared with approved dinner members."
-                        : "Your answers are private. Only the shared dinner plan and progress are visible to others."}
+                        ? "Your food, preferences, budget and travel answers are shared with dinner members."
+                        : "Your answers are private for food, preferences, budget and travel. Manual availability has its own setting above."}
                     </p>
                     {dinner.own.answerSharing ? (
                       <>
@@ -1036,24 +1145,42 @@ export function App() {
               table
             </p>
             <p className="small">
-              Add your own availability and food requirements. The organizer
-              will approve your place.
+              Join now, then add your answers. Manual availability you enter
+              will be shared with dinner members. Food, budget and travel stay
+              private unless you separately choose to share them.
             </p>
+            <label className="check-label consent">
+              <input
+                type="checkbox"
+                checked={joinConsent}
+                onChange={(event) => setJoinConsent(event.target.checked)}
+              />
+              <span>
+                I agree to join this dinner and share my manual availability
+                with its members. Muse may send me dinner planning messages.
+                Calendar busy times and private chats stay private.
+              </span>
+            </label>
             <Button
               className="full"
-              disabled={invitation.availablePlaces <= 0 && !invitation.pending}
-              onClick={() => {
-                setError("");
-                setResponse({
-                  context: { ...invitation },
-                  dinnerId: invitation.dinnerId,
-                  formVersion: invitation.formVersion,
-                  invite,
-                });
-                setScreen("response");
-              }}
+              busy={busy}
+              disabled={
+                !joinConsent ||
+                (invitation.availablePlaces <= 0 && !invitation.pending)
+              }
+              onClick={() =>
+                void mutate(
+                  {
+                    action: "join",
+                    dinnerId: invitation.dinnerId,
+                    formVersion: invitation.formVersion,
+                    payload: { invite, consent: true, shareAvailability: true },
+                  },
+                  edit,
+                )
+              }
             >
-              Add my answers <Icon name="arrow" />
+              Join dinner <Icon name="arrow" />
             </Button>
           </section>
         )}

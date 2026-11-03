@@ -156,7 +156,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       for (let i = 0; i < 5; i++) await create(guest);
       await join(id, token);
       expect(await store.countActiveDinnersForOrganizer(guest.id)).toBe(5);
-      expect((await service.dinner(guest, id)).role).toBe("pending");
+      expect((await service.dinner(guest, id)).role).toBe("member");
     });
     it("renames only metadata with stale and owner checks, preserving confirmations and research input identity", async () => {
       const result = await create(owner, "  Friday dinner  "),

@@ -1,3 +1,4 @@
+import type { ReservationService } from "./reservations.js";
 import {
   ResearchFailure,
   classifyResearchFailure,
@@ -46,6 +47,9 @@ const JobSchema = z.object({
   revision: z.number().int(),
   message: z.string().optional(),
   researchVersion: z.string().optional(),
+  verificationOnly: z.boolean().optional(),
+  pass: z.number().int().optional(),
+  version: z.number().int().optional(),
 });
 export class Worker {
   private workerId = randomUUID();
@@ -60,6 +64,7 @@ export class Worker {
     readonly telegram: TelegramTransport,
     readonly muse?: MuseClient,
     readonly google?: GoogleCalendar,
+    readonly reservations?: ReservationService,
   ) {}
   start(): void {
     this.stopped = false;
@@ -87,7 +92,14 @@ export class Worker {
     await this.store.recoverLeases();
     // One process and a bounded batch respect Telegram global throughput. Jobs are database leased.
     await this.drainInbox();
-    for (const kind of ["extract", "calendar", "research", "revoke"]) {
+    for (const kind of [
+      "extract",
+      "calendar",
+      "research",
+      "verify",
+      "reservation",
+      "revoke",
+    ]) {
       if (this.activeJobs.has(kind)) continue;
       const work = await this.store.claimOutbox(this.workerId, 180000, kind);
       if (work) {
@@ -227,6 +239,12 @@ export class Worker {
     });
   }
   async runJob(work: ClaimedWork): Promise<void> {
+    if (work.kind === "reservation") {
+      if (this.reservations)
+        await this.reservations.processReservation(work, this.workerId);
+      else await this.store.markFailed(work.id, this.workerId);
+      return;
+    }
     if (work.kind === "revoke") {
       try {
         const data = z
@@ -310,6 +328,19 @@ export class Worker {
         );
         if (!context.slots.length)
           throw new ResearchFailure("NO_COMMON_TIME", "planning");
+        if (job.verificationOnly) {
+          const proposal = record.state.dinner.proposals.find(
+            (p) => p.version === record.state.dinner.activeVersion,
+          );
+          const option = proposal?.options[proposal.selectedIndex];
+          const venue = record.state.dinner.venues.find(
+            (v) => v.id === option?.venueId,
+          );
+          if (option && venue) {
+            context.slots = [{ start: option.start, end: option.end }];
+            context.targetVenue = { name: venue.name, address: venue.address };
+          }
+        }
         const result = await this.muse.research(
           context,
           this.coordinator.now(),
@@ -338,6 +369,60 @@ export class Worker {
                   .filter(([alias]) => aliases[alias])
                   .map(([alias, claim]) => [aliases[alias], claim]),
               );
+            }
+            if (job.verificationOnly) {
+              if (s.dinner.activeVersion !== job.version) return;
+              const p = s.dinner.proposals.find(
+                  (p) => p.version === s.dinner.activeVersion,
+                ),
+                o = p?.options[p.selectedIndex];
+              const oldVenue = s.dinner.venues.find((v) => v.id === o?.venueId);
+              const normalize = (v: string) =>
+                v.toLowerCase().replace(/[^a-z0-9]/g, "");
+              const checked = result.venues.find(
+                (v) =>
+                  oldVenue &&
+                  normalize(v.name) === normalize(oldVenue.name) &&
+                  normalize(v.address) === normalize(oldVenue.address),
+              );
+              if (checked && oldVenue)
+                for (const key of [
+                  "location",
+                  "price",
+                  "opening",
+                  "reservation",
+                ] as const) {
+                  if (
+                    checked.evidence[key].status === "known" ||
+                    checked.evidence[key].status === "contradictory"
+                  )
+                    Object.assign(
+                      oldVenue.evidence[key],
+                      checked.evidence[key],
+                    );
+                }
+              await this.coordinator.save(tx, current, s);
+              await tx.updateResearchAttempt(work.id, {
+                status: "needs_checks",
+                stage: "done",
+                code: "EVIDENCE_UNRESOLVED",
+                updatedAt: this.coordinator.now(),
+                finishedAt: this.coordinator.now(),
+                counts,
+              });
+              if (
+                o &&
+                evaluateFeasibility(s.dinner, o, this.coordinator.now())
+                  .status !== "feasible" &&
+                (job.pass ?? 1) < 2
+              )
+                await this.coordinator.scheduleVerification(
+                  tx,
+                  { ...current, state: s },
+                  work.id,
+                  (job.pass ?? 1) + 1,
+                );
+              return;
             }
             s.dinner = setVenues(
               old,
@@ -427,6 +512,13 @@ export class Worker {
               counts,
             });
             await this.coordinator.announce(tx, s, work.id);
+            if (ranked[0].feasibility.status !== "feasible")
+              await this.coordinator.scheduleVerification(
+                tx,
+                { ...current, state: s },
+                work.id,
+                1,
+              );
             if (s.dinner.status === "escalated")
               await this.coordinator.message(
                 tx,

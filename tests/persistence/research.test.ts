@@ -183,6 +183,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
             dinnerId: id,
             payload: { userId: guest.id },
           });
+        if (phase === 'pending')await store.transaction(async tx=>{const r=(await tx.getDinner<any>(id))!;const input=r.state.dinner.constraints[guest.id];r.state.joinRequests[guest.id]={slot:1,name:guest.name,at:now,preferences:input};r.state.dinner.members=r.state.dinner.members.filter((member:{id:string})=>member.id!==guest.id);delete r.state.dinner.constraints[guest.id];await tx.saveDinner(r,r.revision);});
         if (phase === "approved") await approve();
         const edited = await service.mutate(guest, {
           requestId: "edit-with-incomplete-sharing-preview",

@@ -1,3 +1,4 @@
+import type { ReservationService } from "../application/reservations.js";
 import type { FastifyInstance } from "fastify";
 import type { Coordinator } from "../application/coordinator.js";
 import type { Config } from "../config.js";
@@ -6,12 +7,18 @@ import { MiniAppFault, verifyInitData } from "./auth.js";
 import { MiniAppService, publicFault } from "./service.js";
 export function registerMiniAppRoutes(
   app: FastifyInstance,
-  options: { store: PgStore; coordinator: Coordinator; config: Config },
+  options: {
+    store: PgStore;
+    coordinator: Coordinator;
+    config: Config;
+    reservations?: ReservationService;
+  },
 ): void {
   const service = new MiniAppService(
     options.store,
     options.coordinator,
     options.config,
+    options.reservations,
   );
   app.register(async (api) => {
     api.addHook("onRequest", async (_request, reply) => {

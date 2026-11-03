@@ -211,6 +211,8 @@ export const VenueSchema = z.object({
         state: z
           .enum(["unknown", "not-booked", "handoff", "unavailable"])
           .optional(),
+        phone: z.string().max(40).optional(),
+        providerRestaurantId: z.string().regex(/^\d+$/).optional(),
       })
       .strict(),
     dietary: z.record(
@@ -833,6 +835,26 @@ export function selectAlternative(
     now,
   );
 }
+/** Group choice is separate from public evidence readiness; known conflicts still block it. */
+export function canConfirmChoice(
+  d: Dinner,
+  option: PlanOption,
+  now: string,
+): boolean {
+  const feasibility = evaluateFeasibility(d, option, now);
+  return (
+    d.status !== "cancelled" &&
+    d.status !== "escalated" &&
+    !d.disputes.some((x) => x.open) &&
+    Date.parse(option.start) > Date.parse(now) &&
+    feasibility.status !== "infeasible" &&
+    !feasibility.reasons.some(
+      (reason) =>
+        reason === "Intended membership incomplete" ||
+        reason.startsWith("Availability unresolved"),
+    )
+  );
+}
 export function confirmVersion(
   d: Dinner,
   id: string,
@@ -848,11 +870,11 @@ export function confirmVersion(
   if (version !== d.activeVersion)
     fail("STALE", "Confirmation is not for current proposal");
   const p = active(d);
-  if (
-    evaluateFeasibility(d, p.options[p.selectedIndex]!, now).status !==
-    "feasible"
-  )
-    fail("FEASIBILITY", "Only a feasible current plan can be confirmed");
+  if (!canConfirmChoice(d, p.options[p.selectedIndex]!, now))
+    fail(
+      "FEASIBILITY",
+      "This choice conflicts with current willingness, membership or a known firm requirement",
+    );
   const confirmations = {
     ...d.confirmations,
     [id]: version,
@@ -1033,6 +1055,7 @@ export function exportIcs(d: Dinner, now: string): string {
   const p = active(d),
     o = p.options[p.selectedIndex]!,
     v = p.venues.find((v) => v.id === o.venueId)!;
+  const verification = evaluateFeasibility(d, o, now).status;
   const reservation =
     v.evidence.reservation.status === "known"
       ? (v.evidence.reservation.state ?? "unknown")
@@ -1050,7 +1073,7 @@ export function exportIcs(d: Dinner, now: string): string {
     `DTEND:${utc(o.end)}`,
     `SUMMARY:${escapeIcs(`Dinner at ${v.name}`)}`,
     `LOCATION:${escapeIcs(v.address)}`,
-    `DESCRIPTION:${escapeIcs(`Estimated cost: ${o.pricePerPerson} ${d.setup.currency} per person. Reservation: ${reservation}. Attendees: ${p.memberIds.join(", ")}. Local timezone: ${d.setup.timezone}`)}`,
+    `DESCRIPTION:${escapeIcs(`Estimated cost: ${o.pricePerPerson} ${d.setup.currency} per person. Reservation: ${reservation}; no booking implied by group agreement. Restaurant verification: ${verification}. Attendees: ${p.memberIds.join(", ")}. Local timezone: ${d.setup.timezone}`)}`,
     "STATUS:CONFIRMED",
     "END:VEVENT",
     "END:VCALENDAR",

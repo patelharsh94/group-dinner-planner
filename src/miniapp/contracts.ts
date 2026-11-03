@@ -1,5 +1,7 @@
+import type { coordinationView } from "../application/coordination.js";
+import type { ReservationProjection } from "../application/reservations.js";
 import type { ResearchAttempt } from "../application/research.js";
-import type { Constraints, DinnerSetup } from "../domain/index.js";
+import type { Constraints, DinnerSetup, Interval } from "../domain/index.js";
 export type PreferencesInput = Pick<
   Constraints,
   "availability" | "dietary" | "preferences" | "budget" | "travel"
@@ -7,6 +9,7 @@ export type PreferencesInput = Pick<
   availability: NonNullable<Constraints["availability"]>;
   foodConfirmed: true;
   shareAnswers?: boolean;
+  shareAvailability?: boolean;
   removeDietary?: string[];
   removeLimits?: ("budget" | "travel")[];
 };
@@ -24,6 +27,12 @@ export interface CreateDinnerInput {
   consent: true;
 }
 export type MiniAppActionName =
+  | "respondCoordination"
+  | "reviewReservation"
+  | "bookReservation"
+  | "reportReservation"
+  | "setAvailabilitySharing"
+  | "resetInvitation"
   | "renameDinner"
   | "chooseDinner"
   | "setAnswerSharing"
@@ -94,6 +103,36 @@ export interface SharedResponse {
   >;
 }
 export interface DinnerView extends DinnerSummary {
+  reservation?: ReservationProjection;
+  coordination?: ReturnType<typeof coordinationView>;
+  sharedAvailability?: {
+    userId: string;
+    name: string;
+    status: "shared" | "private" | "not-submitted";
+    availability?: Interval[];
+  }[];
+  agreement?: {
+    version: number | null;
+    confirmed: number;
+    required: number;
+    agreed: boolean;
+  };
+  verification?: {
+    status: "pending" | "ready" | "action_needed";
+    checks: {
+      kind: string;
+      status: "pending" | "ready" | "action_needed";
+      message: string;
+      action?: string;
+    }[];
+  };
+  nextAction?: {
+    label: string;
+    message: string;
+    action?: MiniAppActionName;
+    href?: string;
+  };
+  canConfirm?: boolean;
   sharedResponses: SharedResponse[];
   formVersion: string;
   researchPending: boolean;
@@ -123,6 +162,7 @@ export interface DinnerView extends DinnerSummary {
   }[];
   own: {
     answerSharing: boolean;
+    availabilitySharing?: boolean;
     constraints: Constraints;
     reminders: boolean;
     consent: boolean;

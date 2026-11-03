@@ -1245,3 +1245,17 @@ describe("dinner aggregate requirements", () => {
     ).toThrow();
   });
 });
+
+it("AGR-02 records unanimous group choice while restaurant checks remain pending, without claiming a booking", () => {
+  const pending = structuredClone(venue);
+  pending.evidence.price.status = "unknown";
+  pending.evidence.location.status = "unknown";
+  let d = proposeOptions({ ...ready(), venues: [pending] }, "a", [option], now);
+  for (const user of ["a", "b", "c"])
+    d = confirmVersion(d, user, d.activeVersion!, now);
+  expect(d.status).toBe("agreed");
+  expect(evaluateFeasibility(d, option, now).status).toBe("unresolved");
+  expect(exportIcs(d, now)).toContain("Reservation: unknown");
+  d.constraints.b.availability = [];
+  expect(() => confirmVersion(d, "a", d.activeVersion!, now)).toThrow();
+});

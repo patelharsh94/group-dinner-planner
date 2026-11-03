@@ -1,3 +1,7 @@
+import {
+  deleteReservationContactsForUser,
+  reconcileReservationAttempts,
+} from "./reservations.js";
 import type { Pool, PoolClient } from "pg";
 import {
   ResearchAttemptSchema,
@@ -133,6 +137,7 @@ export class DinnerTx {
       "UPDATE outbox SET status=CASE WHEN kind='message' AND status='sending' THEN 'ambiguous' ELSE 'suppressed' END,payload='{}'::jsonb,completed_at=now(),lease_owner=NULL,lease_until=NULL WHERE dinner_id=$1 AND status IN ('pending','sending')",
       [id],
     );
+    await reconcileReservationAttempts(this);
   }
   async deleteDinner(id: string): Promise<void> {
     await this.client.query("DELETE FROM dinners WHERE id=$1", [id]);
@@ -342,6 +347,11 @@ export class DinnerTx {
       ],
     );
   }
+  async revokeInvitations(dinnerId: string): Promise<void> {
+    await this.client.query("DELETE FROM invitations WHERE dinner_id=$1", [
+      dinnerId,
+    ]);
+  }
   async createInvitation(
     tokenHash: string,
     dinnerId: string,
@@ -425,6 +435,7 @@ export class DinnerTx {
   }
   /** Application must also redact this user from domain JSON before committing. */
   async deleteUser(userId: string): Promise<void> {
+    await deleteReservationContactsForUser(this, userId);
     await this.client.query("DELETE FROM miniapp_receipts WHERE user_id=$1", [
       userId,
     ]);
@@ -453,6 +464,7 @@ export class DinnerTx {
       [userId],
     );
     await this.reconcileResearchRuns();
+    await reconcileReservationAttempts(this);
   }
 }
 
@@ -633,9 +645,10 @@ export class PgStore {
         "UPDATE inbox SET payload=CASE WHEN attempts>=5 THEN '{}'::jsonb ELSE payload END,status=CASE WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,completed_at=CASE WHEN attempts>=5 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL WHERE status='processing' AND lease_until<now()",
       );
       await tx.client.query(
-        "UPDATE outbox SET payload=CASE WHEN kind='message' OR attempts>=5 THEN '{}'::jsonb ELSE payload END,status=CASE WHEN kind='message' THEN 'ambiguous' WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,completed_at=CASE WHEN kind='message' OR attempts>=5 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL WHERE status='sending' AND lease_until<now()",
+        "UPDATE outbox SET payload=CASE WHEN (kind='message' OR (kind='reservation' AND payload->>'operation'='book')) OR attempts>=5 THEN '{}'::jsonb ELSE payload END,status=CASE WHEN (kind='message' OR (kind='reservation' AND payload->>'operation'='book')) THEN 'ambiguous' WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,completed_at=CASE WHEN (kind='message' OR (kind='reservation' AND payload->>'operation'='book')) OR attempts>=5 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL WHERE status='sending' AND lease_until<now()",
       );
       await tx.reconcileResearchRuns();
+      await reconcileReservationAttempts(tx);
     });
   }
 
@@ -649,6 +662,7 @@ export class PgStore {
         "UPDATE outbox SET payload='{}'::jsonb,status='suppressed',completed_at=now(),lease_owner=NULL,lease_until=NULL WHERE created_at<now()-interval '7 days' AND status='pending'",
       );
       await tx.reconcileResearchRuns();
+      await reconcileReservationAttempts(tx);
       await client.query(
         "DELETE FROM reminder_limits WHERE last_at<now()-interval '7 days'",
       );

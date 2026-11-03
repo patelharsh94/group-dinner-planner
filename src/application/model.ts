@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CoordinationSchema } from "./coordination.js";
 import { DateTime } from "luxon";
 import {
   DinnerSchema,
@@ -16,6 +17,7 @@ export const DinnerTitleSchema = z
   .optional();
 export const AppDinnerSchema = z.object({
   title: DinnerTitleSchema,
+  coordination: CoordinationSchema.optional(),
   dinner: DinnerSchema,
   roster: z.array(z.object({ name: z.string(), id: z.string() })),
   consents: z.record(
@@ -35,6 +37,16 @@ export const AppDinnerSchema = z.object({
       preferences: ConstraintSchema.optional(),
     }),
   ),
+  availabilitySharing: z
+    .record(
+      z.string(),
+      z.object({
+        enabled: z.boolean(),
+        at: z.string().datetime({ offset: true }),
+        version: z.literal("1.0"),
+      }),
+    )
+    .optional(),
   answerSharing: z
     .record(
       z.string(),
@@ -69,6 +81,13 @@ export function authorized(s: AppDinner, userId: string): boolean {
     !!s.consents[userId]?.active &&
     !s.joinRequests[userId] &&
     s.dinner.members.some((member) => member.id === userId)
+  );
+}
+export function availabilityShared(s: AppDinner, user: string): boolean {
+  return (
+    s.availabilitySharing?.[user]?.enabled ??
+    s.answerSharing?.[user]?.enabled ??
+    false
   );
 }
 export function organizer(s: AppDinner, userId: string): boolean {
