@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import type { DinnerView } from "../../src/miniapp/contracts";
 import type { ResearchCode } from "../../src/application/research";
+import { verificationIssueGuidance } from "./plan-checks";
 
 const guidance: Record<ResearchCode, string> = {
   AUTH_INVALID:
@@ -25,9 +26,9 @@ const guidance: Record<ResearchCode, string> = {
   SEARCH_NOT_EXECUTED:
     "The live search did not complete. Retry research; no sample or invented result was substituted.",
   NO_SUITABLE_OPTIONS:
-    "No candidate met the represented requirements. Review the shared dinner details or try a fresh search.",
+    "Retry research with your saved answers. The search did not produce a usable shortlist; this does not establish that your preferences are impossible.",
   EVIDENCE_UNRESOLVED:
-    "Possible options need more source checks before agreement.",
+    "Review the suggested options. Some restaurant details are not confirmed yet; this does not confirm a reservation.",
   NO_COMMON_TIME:
     "There is no common dinner time yet. Ask participants to review their availability.",
   SERVICE_UNCONFIGURED:
@@ -40,7 +41,7 @@ const titles = {
   queued: "Research queued",
   running: "Research in progress",
   succeeded: "Research complete",
-  needs_checks: "Options need more checks",
+  needs_checks: "Research needs another pass",
   failed: "Research needs attention",
   superseded: "Earlier research was superseded",
   cancelled: "Research cancelled",
@@ -71,11 +72,17 @@ export function ResearchStatus({ dinner }: { dinner: DinnerView }) {
         <span className="eyebrow">Latest research</span>
         <h2>
           {details?.code === "NO_SUITABLE_OPTIONS"
-            ? "No suitable options found"
-            : titles[attempt.status]}
+            ? "We couldn’t finish your shortlist"
+            : attempt.status === "needs_checks" && dinner.options.length
+              ? "Dinner options ready"
+              : titles[attempt.status]}
         </h2>
       </div>
-      <p className="muted small">{attempt.message}</p>
+      <p className="muted small">
+        {attempt.status === "needs_checks" && dinner.options.length
+          ? "You can choose an option and confirm if it works for you. Confirm any food or allergy accommodation with the restaurant before relying on it. A table is not reserved until the reservation is confirmed."
+          : attempt.message}
+      </p>
       {details && (
         <details className="research-diagnostics">
           <summary>Research details for organizer</summary>
@@ -147,13 +154,28 @@ export function ResearchStatus({ dinner }: { dinner: DinnerView }) {
                   </dd>
                 </div>
               )}
+              {details.verificationIssues?.length ? (
+                <div>
+                  <dt>What the source checks found</dt>
+                  <dd>
+                    <ul>
+                      {details.verificationIssues.map((issue) => (
+                        <li key={issue.code}>
+                          {verificationIssueGuidance[issue.code]} ({issue.count}
+                          )
+                        </li>
+                      ))}
+                    </ul>
+                  </dd>
+                </div>
+              ) : null}
               {details.counts && (
                 <div>
                   <dt>Research checks</dt>
                   <dd>
                     {details.counts.venues} venues · {details.counts.options}{" "}
                     options · {details.counts.verifiedClaims} verified claims ·{" "}
-                    {details.counts.unresolvedClaims} unresolved claims ·{" "}
+                    {details.counts.unresolvedClaims} details not confirmed ·{" "}
                     {details.counts.sourcesFailed} source checks failed
                   </dd>
                 </div>

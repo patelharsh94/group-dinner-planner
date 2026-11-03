@@ -103,6 +103,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
             verifiedClaims: 0,
             unresolvedClaims: 0,
             sourcesFailed: 0,
+            issues: [{ code: "excerpt_unmatched", count: 2 }],
           },
         });
       const worker = new Worker(
@@ -164,8 +165,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
           id: retry!.id,
           status: "needs_checks",
           code: "NO_SUITABLE_OPTIONS",
+          verificationIssues: [{ code: "excerpt_unmatched", count: 2 }],
         });
         expect(latest.researchPending).toBe(false);
+        expect(
+          (await service.dinner(guest, id)).researchDetails,
+        ).toBeUndefined();
       } finally {
         logger.mockRestore();
       }

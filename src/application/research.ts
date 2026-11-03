@@ -26,6 +26,20 @@ export const ResearchCodeSchema = z.enum([
   "USAGE_LIMIT",
   "UNEXPECTED_ERROR",
 ]);
+export const VerificationIssueSchema = z
+  .object({
+    code: z.enum([
+      "missing_citation",
+      "excerpt_unmatched",
+      "claim_unsupported",
+      "source_unavailable",
+      "identity_unverified",
+      "provider_unknown",
+      "conflicting_sources",
+    ]),
+    count: z.number().int().positive(),
+  })
+  .strict();
 export const ResearchAttemptSchema = z
   .object({
     id: z.string().min(1).max(128),
@@ -55,6 +69,7 @@ export const ResearchAttemptSchema = z
     retryable: z.boolean().optional(),
     retryAfterSeconds: z.number().int().min(0).max(86400).optional(),
     durationMs: z.number().int().nonnegative().optional(),
+    verificationIssues: z.array(VerificationIssueSchema).max(7).optional(),
     discovery: z
       .object({
         provider: z.literal("yelp"),
@@ -112,9 +127,9 @@ const guidance: Record<ResearchCode, string> = {
   SEARCH_NOT_EXECUTED:
     "Muse did not complete the required live search. Please retry; no fixture or invented result was substituted.",
   NO_SUITABLE_OPTIONS:
-    "Research completed, but no candidate met all requirements. Review the shared details or try a fresh search.",
+    "Research did not produce a usable shortlist. Retry research with your saved answers; you do not need to re-enter them.",
   EVIDENCE_UNRESOLVED:
-    "Research found possible options, but some evidence still needs checking before agreement.",
+    "Dinner options are ready to review. Some restaurant details are not yet confirmed; a reservation is tracked separately.",
   NO_COMMON_TIME:
     "There is no common available dinner time yet. Ask attendees to review their availability.",
   SERVICE_UNCONFIGURED:

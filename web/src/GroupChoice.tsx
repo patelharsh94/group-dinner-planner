@@ -144,7 +144,7 @@ export function VerificationStatus({ dinner }: { dinner: DinnerView }) {
             ? "Ready"
             : verification.status === "action_needed"
               ? "Action needed"
-              : "Checks pending"}
+              : "Some details unconfirmed"}
         </span>
       </div>
       {verification.checks.length ? (
@@ -162,7 +162,7 @@ export function VerificationStatus({ dinner }: { dinner: DinnerView }) {
         <p className="muted small">
           {verification.status === "ready"
             ? "The represented plan checks are complete."
-            : "Some evidence still needs checking. Group agreement does not complete these checks or book a table."}
+            : "Some details could not be confirmed from available sources. You can still choose this restaurant when confirmation is available. A table has not been reserved."}
         </p>
       )}
     </section>

@@ -402,3 +402,15 @@ it("CANCEL-01 discards an in-flight research result after cancellation without s
   expect(saves).toBe(0);
   expect(messages).toBe(0);
 });
+
+it("RES-03 gives each participant an early preference slot before taking second preferences", () => {
+  const state = dinnerState();
+  state.dinner.constraints["1001"].preferences = ["Italian", "Thai", "Mexican"];
+  state.dinner.constraints["1002"].preferences = ["Japanese"];
+  state.dinner.constraints["1003"].preferences = ["Korean"];
+  expect(researchContext(state, now).context.preferences?.slice(0, 3)).toEqual([
+    "Italian",
+    "Japanese",
+    "Korean",
+  ]);
+});

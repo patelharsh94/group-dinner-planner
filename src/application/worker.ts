@@ -351,6 +351,9 @@ export class Worker {
         await this.researchProgress(work, record, {
           stage: "planning",
           ...(result.discovery ? { discovery: result.discovery } : {}),
+          ...(result.verification?.issues
+            ? { verificationIssues: result.verification.issues }
+            : {}),
         });
         const counts = {
           venues: result.venues.length,
@@ -488,7 +491,7 @@ export class Worker {
                 tx,
                 work.id,
                 old.organizerId,
-                "Research blocker: no supported suitable alternative was found. Requirements remain unchanged. Ask participants which preferences may change, or try live research again.",
+                "Muse could not finish a usable shortlist from the available sources. Retry research with your saved answers. You do not need to change your preferences or re-enter your availability.",
                 { dinnerId: record.id },
               );
               return;
@@ -882,6 +885,30 @@ export function researchContext(
       ? [{ alias, origin: t.origin, maxMinutes: t.maxMinutes }]
       : [];
   });
+  const preferenceGroups = required.map((member) => {
+    const own = d.constraints[member.id];
+    return [
+      ...(own?.preferences ?? []),
+      ...(own?.dietary ?? [])
+        .filter((item) => item.strength === "flexible" && !item.allergy)
+        .map((item) => item.requirement),
+    ]
+      .map((value) => value.trim())
+      .filter(Boolean);
+  });
+  const preferences = [
+    ...new Set(
+      Array.from(
+        {
+          length: Math.max(0, ...preferenceGroups.map((group) => group.length)),
+        },
+        (_, index) =>
+          preferenceGroups.flatMap((group) =>
+            group[index] ? [group[index]] : [],
+          ),
+      ).flat(),
+    ),
+  ].slice(0, 64);
   return {
     aliases,
     context: {
@@ -895,24 +922,7 @@ export function researchContext(
       },
       slots: candidateSlots(d, now),
       dietary,
-      preferences: [
-        ...new Set(
-          required
-            .flatMap((member) => {
-              const own = d.constraints[member.id];
-              return [
-                ...(own?.preferences ?? []),
-                ...(own?.dietary ?? [])
-                  .filter(
-                    (item) => item.strength === "flexible" && !item.allergy,
-                  )
-                  .map((item) => item.requirement),
-              ];
-            })
-            .map((value) => value.trim())
-            .filter(Boolean),
-        ),
-      ].slice(0, 64),
+      preferences,
       travel,
       partySize: required.length,
     },

@@ -229,7 +229,7 @@ export async function project(
               ? "The current checks support this option."
               : feasibility === "infeasible"
                 ? "A known requirement conflicts with this option."
-                : "Some venue details still need verification. Agreement does not confirm a reservation.",
+                : "Some restaurant details could not be confirmed from available sources. You can still choose this option when confirmation is available. A table is not reserved yet.",
         },
       ],
     },

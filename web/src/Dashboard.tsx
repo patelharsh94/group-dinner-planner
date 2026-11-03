@@ -1,3 +1,4 @@
+import { planCheckMessage } from "./plan-checks";
 import { GroupChoice, VerificationStatus } from "./GroupChoice";
 import { ReservationPanel } from "./ReservationPanel";
 import { dinnerName } from "./dinners";
@@ -484,14 +485,14 @@ export function Dashboard({
                             {option.ownChecks.status === "feasible"
                               ? "Fits your answers"
                               : option.ownChecks.status === "unresolved"
-                                ? "A few checks are still open"
+                                ? "Restaurant details to confirm"
                                 : "A requirement needs attention"}
                           </strong>
                         </div>
                         {option.ownChecks.reasons.length > 0 && (
                           <ul>
                             {option.ownChecks.reasons.map((item, i) => (
-                              <li key={i}>{item}</li>
+                              <li key={i}>{planCheckMessage(item)}</li>
                             ))}
                           </ul>
                         )}

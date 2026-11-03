@@ -138,6 +138,8 @@ function normalized(value: string): string {
     .trim()
     .toLowerCase();
 }
+export { normalized as normalizedSourceText };
+
 export function sourceContains(source: string, excerpt: string): boolean {
   return (
     normalized(excerpt).length >= 12 &&

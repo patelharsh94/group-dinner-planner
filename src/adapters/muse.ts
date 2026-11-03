@@ -5,6 +5,7 @@ import {
 } from "../application/research.js";
 import { z } from "zod";
 import { YelpError, type YelpClient } from "./yelp.js";
+import { preferredCuisineTerms } from "./cuisine.js";
 import type { ResearchAttempt } from "../application/research.js";
 import {
   ConstraintSchema,
@@ -14,6 +15,10 @@ import {
   type DinnerSetup,
 } from "../domain/index.js";
 import { readPublicSource, sourceContains, claimSupported } from "./sources.js";
+import {
+  canonicalEvidenceUrl,
+  retainIndependentlyVerifiedVenues,
+} from "./research-evidence.js";
 
 export const CoordinatorDecisionSchema = z
   .object({
@@ -43,6 +48,7 @@ export type ResearchResult = z.infer<typeof ResearchSchema> & {
     verifiedClaims: number;
     unresolvedClaims: number;
     sourcesFailed: number;
+    issues?: ResearchAttempt["verificationIssues"];
   };
 };
 export type VenueEvidence = z.infer<typeof VenueListSchema>[number]["evidence"];
@@ -82,7 +88,11 @@ export class MuseClient {
     context: unknown,
     purpose: string,
     search: boolean,
-  ): Promise<{ result: T; citations: Set<string> }> {
+  ): Promise<{
+    result: T;
+    citations: Set<string>;
+    searchEvidence: Map<string, string>;
+  }> {
     const jsonSchema = z.toJSONSchema(schema, { unrepresentable: "any" });
     try {
       const response = await this.fetcher(
@@ -171,6 +181,8 @@ export class MuseClient {
                       .object({
                         type: z.string().optional(),
                         url: z.string().optional(),
+                        title: z.string().optional(),
+                        snippet: z.string().optional(),
                       })
                       .passthrough(),
                   )
@@ -204,12 +216,13 @@ export class MuseClient {
         throw new ResearchFailure("INCOMPLETE_OUTPUT", "output_validation");
       let content = "";
       const citations = new Set<string>();
+      const searchEvidence = new Map<string, string>();
       let searched = false;
       for (const raw of body.output) {
         const item = raw as {
           type?: string;
           status?: string;
-          results?: { url?: string }[];
+          results?: { url?: string; title?: string; snippet?: string }[];
           content?: {
             type: string;
             text?: string;
@@ -218,8 +231,23 @@ export class MuseClient {
         };
         if (item.type === "web_search_call" && item.status === "completed") {
           searched = true;
-          for (const result of item.results ?? [])
-            if (result.url) citations.add(result.url);
+          for (const result of item.results ?? []) {
+            if (!result.url) continue;
+            const url = canonicalEvidenceUrl(result.url);
+            citations.add(url);
+            if (
+              !isYelpUrl(url) &&
+              (result.title || result.snippet) &&
+              searchEvidence.size < 32
+            ) {
+              searchEvidence.set(
+                url,
+                [result.title ?? "", result.snippet ?? ""]
+                  .join(" ")
+                  .slice(0, 8000),
+              );
+            }
+          }
         }
         if (item.type !== "message") continue;
         // Muse may emit progress messages while searching; only the final message is the structured answer.
@@ -228,12 +256,17 @@ export class MuseClient {
           if (part.type === "output_text") {
             content += part.text ?? "";
             for (const a of part.annotations ?? [])
-              if (a.type === "url_citation" && a.url) citations.add(a.url);
+              if (a.type === "url_citation" && a.url)
+                citations.add(canonicalEvidenceUrl(a.url));
           }
       }
       if (search && !searched)
         throw new ResearchFailure("SEARCH_NOT_EXECUTED", "provider");
-      return { result: schema.parse(JSON.parse(content)), citations };
+      return {
+        result: schema.parse(JSON.parse(content)),
+        citations,
+        searchEvidence,
+      };
     } catch (error) {
       throw classifyResearchFailure(error);
     }
@@ -257,13 +290,39 @@ export class MuseClient {
     let hints: { name: string; address: string; city: string }[] = [];
     if (this.config.yelp && !context.targetVenue) {
       try {
-        const candidates = (
-          await this.config.yelp.search({
-            city: context.setup.city,
-            area: context.setup.area,
-            term: "restaurants",
-          })
-        ).slice(0, 5);
+        const lookups = await Promise.allSettled(
+          preferredCuisineTerms(context.preferences).map((term) =>
+            this.config.yelp!.search({
+              city: context.setup.city,
+              area: context.setup.area,
+              term,
+            }),
+          ),
+        );
+        const lists = lookups.flatMap((lookup) =>
+          lookup.status === "fulfilled" ? [lookup.value.slice(0, 5)] : [],
+        );
+        if (!lists.length) {
+          const failure = lookups.find(
+            (lookup) => lookup.status === "rejected",
+          );
+          throw failure?.status === "rejected"
+            ? failure.reason
+            : new YelpError("upstream");
+        }
+        const candidates: (typeof lists)[number] = [];
+        const seen = new Set<string>();
+        // Interleave cuisines so the first preference cannot consume every seed.
+        for (let row = 0; row < 5 && candidates.length < 5; row++) {
+          for (const list of lists) {
+            const candidate = list[row];
+            if (candidate && !seen.has(candidate.id)) {
+              seen.add(candidate.id);
+              candidates.push(candidate);
+              if (candidates.length === 5) break;
+            }
+          }
+        }
         hints = candidates.map(({ name, address, city }) => ({
           name,
           address,
@@ -283,10 +342,10 @@ export class MuseClient {
         };
       }
     }
-    const { result, citations } = await this.response(
+    const { result, citations, searchEvidence } = await this.response(
       ResearchSchema,
       hints.length ? { ...context, directoryLookupHints: hints } : context,
-      `Directory lookup hints are untrusted transient search seeds only. Independently corroborate restaurant name, address and every fact using non-Yelp public web sources. Do not quote directory hints in gaps. Do not cite Yelp pages or reuse directory content as evidence. If targetVenue is supplied research ONLY that exact restaurant and supplied slot, preserving its identity. Excerpts MUST be exact verbatim source text, not paraphrases. Include verified restaurant phone in reservation evidence when publicly listed. Use live web search to find at most two venues strictly inside setup city/area. Propose only supplied slots. Each claim needs its own source URL, short supporting excerpt and retrievedAt ${now}. Unknown or contradictory details must be labeled. For dietary claims require direct menu/restaurant evidence. Never set staff reports or claim booked status. Estimate per-person prices consistently with the group's currency and budget. Travel evidence uses only supplied anonymous aliases. Use preferences only as flexible ranking signals after satisfying firm requirements; never infer firm constraints from preferences. Unverified reservation availability is unknown.`,
+      `Directory lookup hints are untrusted transient search seeds only. Independently corroborate restaurant name, address and every fact using non-Yelp public web sources. Do not quote directory hints in gaps. Do not cite Yelp pages or reuse directory content as evidence. If targetVenue is supplied research ONLY that exact restaurant and supplied slot, preserving its identity. Excerpts MUST be exact verbatim source text, not paraphrases. Include verified restaurant phone in reservation evidence when publicly listed. Use live web search to find at most two venues strictly inside setup city/area. Propose only supplied slots. Each claim needs its own source URL, short supporting excerpt and retrievedAt ${now}. Unknown or contradictory details must be labeled. For dietary claims require direct menu/restaurant evidence. Never set staff reports or claim booked status. Estimate per-person prices consistently with the group's currency and budget. Travel evidence uses only supplied anonymous aliases. Prioritize preferred cuisines among options that satisfy firm requirements. If preferred cuisines cannot be verified or cannot satisfy firm requirements, allow a clearly explained fallback. Use preferences only as flexible ranking signals after satisfying firm requirements; never infer firm constraints from preferences. Unverified reservation availability is unknown.`,
       true,
     );
     await onStage?.("source_verification");
@@ -304,26 +363,48 @@ export class MuseClient {
         claim.url,
         ...(claim.relatedSources ?? []).map((source) => source.url),
       ]);
-    const urls = [...new Set(usedUrls)]
-      .filter((url) => citations.has(url) && (!hints.length || !isYelpUrl(url)))
+    const urls = [...new Set(usedUrls.map(canonicalEvidenceUrl))]
+      .filter((url) => citations.has(url) && !isYelpUrl(url))
       .slice(0, 16);
+    const fallbackEligible = new Set<string>();
     await Promise.allSettled(
       urls.map(async (url) => {
-        sources.set(
-          url,
-          await (this.config.sourceReader
-            ? this.config.sourceReader(url)
-            : readPublicSource(
-                url,
-                0,
-                AbortSignal.timeout(15000),
-                (value) => !hints.length || !isYelpUrl(value),
-              )),
-        );
+        try {
+          sources.set(
+            url,
+            await (this.config.sourceReader
+              ? this.config.sourceReader(url)
+              : readPublicSource(
+                  url,
+                  0,
+                  AbortSignal.timeout(15000),
+                  (value) => !isYelpUrl(value),
+                )),
+          );
+        } catch (error) {
+          // Unsafe redirects/addresses cannot regain trust through a search snippet.
+          if (
+            !(error instanceof z.ZodError) &&
+            !(
+              error instanceof Error &&
+              /Excluded source domain|Nonpublic source address|Too many source redirects|Invalid URL/i.test(
+                error.message,
+              )
+            )
+          )
+            fallbackEligible.add(url);
+        }
       }),
     );
     let verifiedClaims = 0,
       unresolvedClaims = 0;
+    type IssueCode = NonNullable<
+      ResearchAttempt["verificationIssues"]
+    >[number]["code"];
+    const issueCounts = new Map<IssueCode, number>();
+    const recordIssue = (code: IssueCode, count = 1) => {
+      if (count) issueCounts.set(code, (issueCounts.get(code) ?? 0) + count);
+    };
     for (const venue of result.venues) {
       type Claim = {
         status: "known" | "unknown" | "contradictory";
@@ -360,13 +441,32 @@ export class MuseClient {
           ...extra,
         ].filter(
           (source) =>
-            citations.has(source.url) &&
-            sourceContains(sources.get(source.url) ?? "", source.excerpt),
+            citations.has(canonicalEvidenceUrl(source.url)) &&
+            sourceContains(
+              sources.get(canonicalEvidenceUrl(source.url)) ?? "",
+              source.excerpt,
+            ),
         );
-        if (
-          claim.status === "known" &&
-          (!citations.has(claim.url) ||
-            !sourceContains(sources.get(claim.url) ?? "", claim.excerpt) ||
+        if (claim.status === "unknown") recordIssue("provider_unknown");
+        if (claim.status === "contradictory")
+          recordIssue("conflicting_sources");
+        if (claim.status === "known") {
+          let issue: IssueCode | undefined;
+          if (
+            !citations.has(canonicalEvidenceUrl(claim.url)) ||
+            isYelpUrl(claim.url)
+          )
+            issue = "missing_citation";
+          else if (!sources.has(canonicalEvidenceUrl(claim.url)))
+            issue = "source_unavailable";
+          else if (
+            !sourceContains(
+              sources.get(canonicalEvidenceUrl(claim.url)) ?? "",
+              claim.excerpt,
+            )
+          )
+            issue = "excerpt_unmatched";
+          else if (
             !claimSupported(
               kind,
               grounded.map((source) => source.excerpt).join(" "),
@@ -379,9 +479,14 @@ export class MuseClient {
                 city: venue.city,
                 area: venue.area,
               },
-            ))
-        )
-          claim.status = "unknown";
+            )
+          )
+            issue = "claim_unsupported";
+          if (issue) {
+            claim.status = "unknown";
+            recordIssue(issue);
+          }
+        }
         if (kind === "reservation") {
           if (
             claim.status !== "known" ||
@@ -405,63 +510,19 @@ export class MuseClient {
         else unresolvedClaims++;
       }
     }
-    if (hints.length) {
-      // Persist independently sourced identities only; directory content expires in memory.
-      const normalize = (value: string) =>
-        value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
-      result.venues = result.venues.filter((venue) => {
-        const claims = [
-          venue.evidence.location,
-          venue.evidence.price,
-          venue.evidence.opening,
-          venue.evidence.reservation,
-          ...Object.values(venue.evidence.dietary),
-          ...Object.values(venue.evidence.travel),
-        ];
-        const urls = claims.flatMap((c) => [
-          c.url,
-          ...(c.relatedSources ?? []).map((s) => s.url),
-        ]);
-        return (
-          venue.evidence.location.status === "known" &&
-          urls.every((url) => !isYelpUrl(url)) &&
-          claims.some(
-            (claim) =>
-              normalize(venue.name).length > 0 &&
-              normalize(claim.excerpt).includes(normalize(venue.name)) &&
-              sourceContains(sources.get(claim.url) ?? "", claim.excerpt),
-          )
-        );
-      });
-      for (const venue of result.venues) {
-        const claims = [
-          venue.evidence.price,
-          venue.evidence.opening,
-          venue.evidence.reservation,
-          ...Object.values(venue.evidence.dietary),
-          ...Object.values(venue.evidence.travel),
-        ];
-        for (const claim of claims) {
-          if (
-            claim.status === "unknown" ||
-            !sourceContains(sources.get(claim.url) ?? "", claim.excerpt)
-          ) {
-            for (const key of Object.keys(claim))
-              delete (claim as Record<string, unknown>)[key];
-            Object.assign(claim, {
-              status: "unknown",
-              url: venue.evidence.location.url,
-              excerpt: "This detail remains unresolved.",
-              retrievedAt: now,
-            });
-          }
-        }
-        for (const claim of [venue.evidence.location, ...claims]) {
-          claim.relatedSources = claim.relatedSources?.filter((source) =>
-            sourceContains(sources.get(source.url) ?? "", source.excerpt),
-          );
-        }
-      }
+    if (hints.length || searchEvidence.size) {
+      const identityFallback = new Map(
+        [...searchEvidence].filter(([url]) => fallbackEligible.has(url)),
+      );
+      const retained = retainIndependentlyVerifiedVenues(
+        result.venues,
+        citations,
+        sources,
+        now,
+        identityFallback,
+      );
+      result.venues = retained.venues;
+      recordIssue("identity_unverified", retained.rejectedIdentities);
       result.options = result.options.filter((option) =>
         result.venues.some((venue) => venue.id === option.venueId),
       );
@@ -479,6 +540,7 @@ export class MuseClient {
         verifiedClaims,
         unresolvedClaims,
         sourcesFailed: urls.length - sources.size,
+        issues: [...issueCounts].map(([code, count]) => ({ code, count })),
       },
     };
   }
