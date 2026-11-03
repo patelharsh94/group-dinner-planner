@@ -35,7 +35,9 @@ export async function readPublicSource(
   input: string,
   redirects = 0,
   signal: AbortSignal = AbortSignal.timeout(15000),
+  allowUrl: (url: string) => boolean = () => true,
 ): Promise<string> {
+  if (!allowUrl(input)) throw new Error("Excluded source domain");
   const url = new URL(PublicUrlSchema.parse(input));
   const addresses = await Promise.race([
     lookup(url.hostname, { all: true }),
@@ -88,6 +90,7 @@ export async function readPublicSource(
             new URL(response.headers.location, url).toString(),
             redirects + 1,
             signal,
+            allowUrl,
           ).then(resolve, reject);
           return;
         }

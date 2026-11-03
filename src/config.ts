@@ -15,6 +15,12 @@ export const ConfigSchema = z.object({
       "Use 32 random bytes encoded as base64",
     ),
   MODEL_API_KEY: z.string().optional(),
+  YELP_API_KEY: z.string().trim().optional(),
+  // Places uses the API key; client ID is accepted for account administration only.
+  YELP_CLIENT_ID: z.string().optional(),
+  YELP_USAGE_MODE: z
+    .enum(["disabled", "evaluation", "production"])
+    .default("disabled"),
   API_KEY: z.string().min(32).optional(),
   MUSE_BASE_URL: z.url().default("https://api.meta.ai/v1"),
   MUSE_MODEL: z.string().default("muse-spark-1.3"),

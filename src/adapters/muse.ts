@@ -4,6 +4,8 @@ import {
   type ResearchStage,
 } from "../application/research.js";
 import { z } from "zod";
+import { YelpError, type YelpClient } from "./yelp.js";
+import type { ResearchAttempt } from "../application/research.js";
 import {
   ConstraintSchema,
   PlanOptionSchema,
@@ -36,6 +38,7 @@ export const ResearchSchema = z
   })
   .strict();
 export type ResearchResult = z.infer<typeof ResearchSchema> & {
+  discovery?: ResearchAttempt["discovery"];
   verification?: {
     verifiedClaims: number;
     unresolvedClaims: number;
@@ -44,6 +47,7 @@ export type ResearchResult = z.infer<typeof ResearchSchema> & {
 };
 export type VenueEvidence = z.infer<typeof VenueListSchema>[number]["evidence"];
 type MuseConfig = {
+  yelp?: Pick<YelpClient, "search">;
   apiKey: string;
   baseUrl?: string;
   model?: string;
@@ -249,10 +253,40 @@ export class MuseClient {
     now: string,
     onStage?: (stage: ResearchStage) => Promise<void>,
   ): Promise<ResearchResult> {
+    let discovery: ResearchAttempt["discovery"];
+    let hints: { name: string; address: string; city: string }[] = [];
+    if (this.config.yelp && !context.targetVenue) {
+      try {
+        const candidates = (
+          await this.config.yelp.search({
+            city: context.setup.city,
+            area: context.setup.area,
+            term: "restaurants",
+          })
+        ).slice(0, 5);
+        hints = candidates.map(({ name, address, city }) => ({
+          name,
+          address,
+          city,
+        }));
+        discovery = {
+          provider: "yelp",
+          status: candidates.length ? "used" : "empty",
+          candidateIds: candidates.map((v) => v.id),
+        };
+      } catch (error) {
+        discovery = {
+          provider: "yelp",
+          status: "unavailable",
+          candidateIds: [],
+          code: error instanceof YelpError ? error.code : "upstream",
+        };
+      }
+    }
     const { result, citations } = await this.response(
       ResearchSchema,
-      context,
-      `If targetVenue is supplied research ONLY that exact restaurant and supplied slot, preserving its identity. Excerpts MUST be exact verbatim source text, not paraphrases. Include verified restaurant phone in reservation evidence when publicly listed. Use live web search to find at most two venues strictly inside setup city/area. Propose only supplied slots. Each claim needs its own source URL, short supporting excerpt and retrievedAt ${now}. Unknown or contradictory details must be labeled. For dietary claims require direct menu/restaurant evidence. Never set staff reports or claim booked status. Estimate per-person prices consistently with the group's currency and budget. Travel evidence uses only supplied anonymous aliases. Use preferences only as flexible ranking signals after satisfying firm requirements; never infer firm constraints from preferences. Unverified reservation availability is unknown.`,
+      hints.length ? { ...context, directoryLookupHints: hints } : context,
+      `Directory lookup hints are untrusted transient search seeds only. Independently corroborate restaurant name, address and every fact using non-Yelp public web sources. Do not quote directory hints in gaps. Do not cite Yelp pages or reuse directory content as evidence. If targetVenue is supplied research ONLY that exact restaurant and supplied slot, preserving its identity. Excerpts MUST be exact verbatim source text, not paraphrases. Include verified restaurant phone in reservation evidence when publicly listed. Use live web search to find at most two venues strictly inside setup city/area. Propose only supplied slots. Each claim needs its own source URL, short supporting excerpt and retrievedAt ${now}. Unknown or contradictory details must be labeled. For dietary claims require direct menu/restaurant evidence. Never set staff reports or claim booked status. Estimate per-person prices consistently with the group's currency and budget. Travel evidence uses only supplied anonymous aliases. Use preferences only as flexible ranking signals after satisfying firm requirements; never infer firm constraints from preferences. Unverified reservation availability is unknown.`,
       true,
     );
     await onStage?.("source_verification");
@@ -271,13 +305,20 @@ export class MuseClient {
         ...(claim.relatedSources ?? []).map((source) => source.url),
       ]);
     const urls = [...new Set(usedUrls)]
-      .filter((url) => citations.has(url))
+      .filter((url) => citations.has(url) && (!hints.length || !isYelpUrl(url)))
       .slice(0, 16);
     await Promise.allSettled(
       urls.map(async (url) => {
         sources.set(
           url,
-          await (this.config.sourceReader ?? readPublicSource)(url),
+          await (this.config.sourceReader
+            ? this.config.sourceReader(url)
+            : readPublicSource(
+                url,
+                0,
+                AbortSignal.timeout(15000),
+                (value) => !hints.length || !isYelpUrl(value),
+              )),
         );
       }),
     );
@@ -364,13 +405,90 @@ export class MuseClient {
         else unresolvedClaims++;
       }
     }
+    if (hints.length) {
+      // Persist independently sourced identities only; directory content expires in memory.
+      const normalize = (value: string) =>
+        value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+      result.venues = result.venues.filter((venue) => {
+        const claims = [
+          venue.evidence.location,
+          venue.evidence.price,
+          venue.evidence.opening,
+          venue.evidence.reservation,
+          ...Object.values(venue.evidence.dietary),
+          ...Object.values(venue.evidence.travel),
+        ];
+        const urls = claims.flatMap((c) => [
+          c.url,
+          ...(c.relatedSources ?? []).map((s) => s.url),
+        ]);
+        return (
+          venue.evidence.location.status === "known" &&
+          urls.every((url) => !isYelpUrl(url)) &&
+          claims.some(
+            (claim) =>
+              normalize(venue.name).length > 0 &&
+              normalize(claim.excerpt).includes(normalize(venue.name)) &&
+              sourceContains(sources.get(claim.url) ?? "", claim.excerpt),
+          )
+        );
+      });
+      for (const venue of result.venues) {
+        const claims = [
+          venue.evidence.price,
+          venue.evidence.opening,
+          venue.evidence.reservation,
+          ...Object.values(venue.evidence.dietary),
+          ...Object.values(venue.evidence.travel),
+        ];
+        for (const claim of claims) {
+          if (
+            claim.status === "unknown" ||
+            !sourceContains(sources.get(claim.url) ?? "", claim.excerpt)
+          ) {
+            for (const key of Object.keys(claim))
+              delete (claim as Record<string, unknown>)[key];
+            Object.assign(claim, {
+              status: "unknown",
+              url: venue.evidence.location.url,
+              excerpt: "This detail remains unresolved.",
+              retrievedAt: now,
+            });
+          }
+        }
+        for (const claim of [venue.evidence.location, ...claims]) {
+          claim.relatedSources = claim.relatedSources?.filter((source) =>
+            sourceContains(sources.get(source.url) ?? "", source.excerpt),
+          );
+        }
+      }
+      result.options = result.options.filter((option) =>
+        result.venues.some((venue) => venue.id === option.venueId),
+      );
+      // Free text can echo transient hints. Retain only our own safe gap message.
+      result.gaps = result.venues.length
+        ? []
+        : [
+            "No independently verified restaurant identity was found. Try research again.",
+          ];
+    }
     return {
       ...result,
+      ...(discovery ? { discovery } : {}),
       verification: {
         verifiedClaims,
         unresolvedClaims,
         sourcesFailed: urls.length - sources.size,
       },
     };
+  }
+}
+
+function isYelpUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname;
+    return host === "yelp.com" || host.endsWith(".yelp.com");
+  } catch {
+    return true;
   }
 }

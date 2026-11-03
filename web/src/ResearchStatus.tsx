@@ -127,6 +127,26 @@ export function ResearchStatus({ dinner }: { dinner: DinnerView }) {
                   </dd>
                 </div>
               )}
+              {details.discovery && (
+                <div>
+                  <dt>Restaurant discovery</dt>
+                  <dd>
+                    {details.discovery.status === "used"
+                      ? "Discovery assisted by "
+                      : details.discovery.status === "empty"
+                        ? "No Yelp candidates; using web search. "
+                        : "Yelp unavailable; using web search. "}
+                    <a
+                      href="https://www.yelp.com"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Yelp
+                    </a>
+                    {details.discovery.code && ` (${details.discovery.code})`}
+                  </dd>
+                </div>
+              )}
               {details.counts && (
                 <div>
                   <dt>Research checks</dt>

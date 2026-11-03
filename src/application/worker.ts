@@ -348,7 +348,10 @@ export class Worker {
             await this.researchProgress(work, record, { stage });
           },
         );
-        await this.researchProgress(work, record, { stage: "planning" });
+        await this.researchProgress(work, record, {
+          stage: "planning",
+          ...(result.discovery ? { discovery: result.discovery } : {}),
+        });
         const counts = {
           venues: result.venues.length,
           options: result.options.length,

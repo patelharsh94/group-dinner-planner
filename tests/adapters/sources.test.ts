@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import {
   isPublicAddress,
+  readPublicSource,
   sourceContains,
   claimSupported,
 } from "../../src/adapters/sources.js";
@@ -126,4 +127,15 @@ it("RES-01 requires literal normalized source support for individual claim excer
       currency: "USD",
     }),
   ).toBe(false);
+});
+
+it("YELP-01 rejects an excluded source before DNS or HTTP, including redirected inputs", async () => {
+  await expect(
+    readPublicSource(
+      "https://www.yelp.com/biz/example",
+      1,
+      AbortSignal.timeout(1000),
+      () => false,
+    ),
+  ).rejects.toThrow("Excluded source domain");
 });

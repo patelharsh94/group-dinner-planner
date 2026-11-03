@@ -55,6 +55,27 @@ export const ResearchAttemptSchema = z
     retryable: z.boolean().optional(),
     retryAfterSeconds: z.number().int().min(0).max(86400).optional(),
     durationMs: z.number().int().nonnegative().optional(),
+    discovery: z
+      .object({
+        provider: z.literal("yelp"),
+        status: z.enum(["used", "empty", "unavailable"]),
+        candidateIds: z
+          .array(z.string().regex(/^[A-Za-z0-9_-]{1,200}$/))
+          .max(5),
+        code: z
+          .enum([
+            "unauthorized",
+            "forbidden",
+            "rate_limited",
+            "network",
+            "invalid_response",
+            "invalid_request",
+            "upstream",
+          ])
+          .optional(),
+      })
+      .strict()
+      .optional(),
     counts: z
       .object({
         venues: z.number().int().nonnegative(),

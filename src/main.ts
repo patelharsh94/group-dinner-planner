@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import { loadConfig } from "./config.js";
 import { PgStore } from "./persistence/store.js";
 import { MuseClient } from "./adapters/muse.js";
+import { YelpClient } from "./adapters/yelp.js";
 import { GoogleCalendar } from "./adapters/google.js";
 import { TelegramTransport } from "./adapters/telegram.js";
 import { Coordinator } from "./application/coordinator.js";
@@ -27,6 +28,10 @@ const muse = config.MODEL_API_KEY
       apiKey: config.MODEL_API_KEY,
       baseUrl: config.MUSE_BASE_URL,
       model: config.MUSE_MODEL,
+      yelp:
+        config.YELP_API_KEY && config.YELP_USAGE_MODE === "production"
+          ? new YelpClient({ apiKey: config.YELP_API_KEY })
+          : undefined,
     })
   : undefined;
 const coordinator = new Coordinator(config, google);
