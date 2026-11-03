@@ -224,6 +224,16 @@ export function ReservationPanel({
             (review.status === "handoff_required" ||
               review.status === "action_needed") && (
               <>
+                {review.searchUrl && (
+                  <a
+                    className="button button-primary"
+                    href={review.searchUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Find restaurant contact
+                  </a>
+                )}
                 {review.bookingUrl && (
                   <a
                     className="button button-secondary"

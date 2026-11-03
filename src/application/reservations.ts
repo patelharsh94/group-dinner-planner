@@ -28,6 +28,7 @@ export interface ReservationReview {
   message: string;
   bookingUrl?: string;
   phone?: string;
+  searchUrl?: string;
   provider?: string;
   expiresAt?: string;
   requiredContactFields?: string[];
@@ -162,9 +163,14 @@ export class ReservationService {
             ? "Open the verified reservation page, book the exact confirmed time and party size, then report the result."
             : phone
               ? "Call the verified restaurant number, request the confirmed time and party size, then report the result."
-              : "A verified booking page or phone number is needed. Ask the restaurant to confirm the exact time and party size.",
+              : "Muse could not verify a booking page or phone number. Use Find restaurant contact below, then ask the restaurant to confirm your selected date, time, party size and any outstanding requirements.",
       ...(bookingUrl ? { bookingUrl } : {}),
       ...(phone ? { phone } : {}),
+      ...(!bookingUrl && !phone && venue
+        ? {
+            searchUrl: `https://www.google.com/search?q=${encodeURIComponent(`${venue.name} ${venue.address} official reservations phone`)}`,
+          }
+        : {}),
       provider: capability.provider,
     };
     await tx.client.query(
