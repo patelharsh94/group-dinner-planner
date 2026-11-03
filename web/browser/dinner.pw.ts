@@ -25,7 +25,7 @@ async function telegramFixture(page: Page) {
   });
   await page.clock.install({ time: new Date("2026-11-01T18:00:00Z") });
 }
-test("synthetic host: create, save own answers, invite, approve and confirm a plan", async ({
+test("synthetic host: create, save own answers, invite, automatic joining and confirm a plan", async ({
   page,
 }) => {
   await telegramFixture(page);
@@ -62,7 +62,7 @@ test("synthetic host: create, save own answers, invite, approve and confirm a pl
         pendingRequests: [{ userId: "test-friend", name: "Test Friend" }],
       };
     }
-    if (action.action === "approve")
+    if (action.action === "invite")
       dinner = {
         ...dinner,
         formVersion: "form-3",
@@ -147,7 +147,9 @@ test("synthetic host: create, save own answers, invite, approve and confirm a pl
   await expect
     .poll(() => actions.some((action) => action.action === "invite"))
     .toBe(true);
-  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Approve", exact: true }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: /Find dinner options/ }).click();
   await expect(
     page.getByRole("heading", { name: "Synthetic Test Bistro" }).first(),
