@@ -116,6 +116,17 @@ const businessSchema = z.object({
   hours: hoursSchema.optional(),
 });
 
+/** Mirrors the menu_url schema refinement: public HTTPS without credentials. */
+function isPublicHttps(value: string): boolean {
+  if (value.length > 3000) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 export class YelpClient {
   private readonly fetcher: typeof fetch;
   private readonly now: () => number;
@@ -221,7 +232,16 @@ export class YelpClient {
       const retrieved = this.now();
       const expires = retrieved + this.ttl;
       const value = records.map((record): YelpBusiness => {
-        const parsed = businessSchema.safeParse(record);
+        // An unsafe menu link must not discard the whole business. Only the link is dropped.
+        const sanitized =
+          record && typeof record === "object" && "attributes" in record &&
+          record.attributes && typeof record.attributes === "object" &&
+          "menu_url" in record.attributes &&
+          typeof (record.attributes as { menu_url?: unknown }).menu_url === "string" &&
+          !isPublicHttps((record.attributes as { menu_url: string }).menu_url)
+            ? { ...record, attributes: { ...(record.attributes as object), menu_url: undefined } }
+            : record;
+        const parsed = businessSchema.safeParse(sanitized);
         if (!parsed.success) throw new YelpError("invalid_response");
         const b = parsed.data;
         const regular = (b.business_hours ?? b.hours)?.find(

@@ -119,6 +119,20 @@ describe("Yelp Places boundary", () => {
     );
   });
 
+  it("keeps the business but drops a non-HTTPS menu URL instead of failing discovery", async () => {
+    const client = new YelpClient({
+      apiKey: "test-secret",
+      fetcher: vi
+        .fn()
+        .mockResolvedValue(
+          response({ businesses: [{ ...raw, attributes: { menu_url: "http://restaurant.example/menu" } }] }),
+        ),
+    });
+    const result = await client.search({ city: "Chicago" });
+    expect(result).toHaveLength(1);
+    expect(result[0].menuUrl).toBeUndefined();
+  });
+
   it.each([
     { businesses: [{}] },
     { businesses: [{ ...raw, url: "https://evil.example" }] },
