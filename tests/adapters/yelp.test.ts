@@ -18,6 +18,7 @@ const raw = {
   photos: ["private-photo"],
   reviews: ["not retained"],
   rating: 5,
+  attributes: { menu_url: "https://restaurant.example/menu" },
 };
 const response = (data: unknown) => new Response(JSON.stringify(data));
 
@@ -38,7 +39,7 @@ describe("Yelp Places boundary", () => {
       location: "Loop, Chicago",
       term: "Italian",
       categories: "restaurants",
-      limit: "5",
+      limit: "10",
     });
     expect(init).toMatchObject({
       headers: { Authorization: "Bearer test-secret" },
@@ -50,6 +51,7 @@ describe("Yelp Places boundary", () => {
       address: "10 Main St, Chicago, IL",
       city: "Chicago",
       priceLevel: "$$",
+      menuUrl: "https://restaurant.example/menu",
       hours: [{ day: 0, start: "1700", end: "2200", isOvernight: false }],
     });
     expect(result[0]).not.toHaveProperty("photos");
@@ -139,9 +141,9 @@ describe("Yelp Places boundary", () => {
       apiKey: "test-secret",
       fetcher: vi
         .fn()
-        .mockResolvedValue(response({ businesses: Array(9).fill(raw) })),
+        .mockResolvedValue(response({ businesses: Array(12).fill(raw) })),
     });
-    expect(await client.search({ city: "Chicago" })).toHaveLength(5);
+    expect(await client.search({ city: "Chicago" })).toHaveLength(10);
     expect(
       () => new YelpClient({ apiKey: "test-secret", cacheTtlMs: 86_400_000 }),
     ).toThrow();

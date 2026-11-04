@@ -1,3 +1,4 @@
+import { getDirectoryBusinesses } from "../persistence/directory.js";
 import { ensureCoordination } from "./coordination.js";
 import { researchGuidance, type ResearchCode } from "./research.js";
 import { researchVersion } from "./research-version.js";
@@ -608,6 +609,26 @@ export class Coordinator {
       return;
     }
     if (command === "/export") {
+      const active = d.proposals.find((p) => p.version === d.activeVersion);
+      if (active?.venues.some((v) => v.directoryBusinessId)) {
+        if (d.status !== "agreed" || !canPlan(s))
+          throw new DomainError(
+            "AGREEMENT",
+            "Everyone needs to confirm this dinner before calendar export.",
+          );
+        await this.message(
+          tx,
+          eventId,
+          chatId,
+          "Download your dinner event in the planner to include the current restaurant details.",
+          {
+            dinnerId: record.id,
+            reply: true,
+            buttons: this.plannerButtons({ dinner: record.id }),
+          },
+        );
+        return;
+      }
       if (!canPlan(s))
         throw new DomainError(
           "CONSENT",
@@ -755,8 +776,33 @@ export class Coordinator {
         proposalVersion: requestedVersion,
       });
       const version = confirmation.proposalVersion;
+      const active = d.proposals.find((p) => p.version === version),
+        choice = active?.options[active.selectedIndex];
+      const selected =
+        d.venues.find((v) => v.id === choice?.venueId) ??
+        active?.venues.find((v) => v.id === choice?.venueId);
+      if (
+        selected?.directoryBusinessId &&
+        !(await getDirectoryBusinesses(tx, [selected.directoryBusinessId], now))
+          .length
+      ) {
+        await this.message(
+          tx,
+          eventId,
+          chatId,
+          "Open the planner to refresh the restaurant details before confirming.",
+          {
+            dinnerId: record.id,
+            reply: true,
+            buttons: this.plannerButtons({ dinner: record.id }),
+          },
+        );
+        return;
+      }
       s.dinner = confirmVersion(d, user, version, now);
-      await this.save(tx, record, s);
+      const confirmedRecord = await this.save(tx, record, s);
+      if (s.dinner.status === "agreed")
+        await this.scheduleVerification(tx, confirmedRecord, eventId, 1);
       await dinnerReply(
         `Your explicit confirmation of version ${version} is recorded.`,
       );
@@ -782,7 +828,8 @@ export class Coordinator {
         Number(callback?.[3] ?? args[0]) - 1,
         now,
       );
-      await this.save(tx, record, s);
+      const selectedRecord = await this.save(tx, record, s);
+      await this.scheduleVerification(tx, selectedRecord, eventId, 1);
       await this.announce(tx, s, eventId);
       return;
     }
@@ -1418,7 +1465,12 @@ export class Coordinator {
       }
       return;
     }
-    if (!this.config.MODEL_API_KEY) {
+    if (
+      !this.config.MODEL_API_KEY &&
+      !(
+        this.config.YELP_API_KEY && this.config.YELP_USAGE_MODE === "production"
+      )
+    ) {
       await this.blockedResearch(tx, record, eventId, "SERVICE_UNCONFIGURED");
       return;
     }
@@ -1708,11 +1760,11 @@ export function proposalButtons(d: Dinner): Buttons | undefined {
       },
     ],
   ];
-  if (p.options.length === 2)
+  for (let index = 1; index < p.options.length; index++)
     buttons.push([
       {
-        text: "Organizer: select option 2",
-        callback_data: `select:${d.id}:${p.version}:2`,
+        text: `Organizer: select option ${index + 1}`,
+        callback_data: `select:${d.id}:${p.version}:${index + 1}`,
       },
     ]);
   return buttons;

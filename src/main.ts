@@ -1,3 +1,4 @@
+import { YelpReservationProvider } from "./adapters/yelp-reservations.js";
 import { OpenTableProvider } from "./adapters/opentable.js";
 import { ReservationService } from "./application/reservations.js";
 import { Pool } from "pg";
@@ -23,27 +24,34 @@ const google =
         redirectUri: `${config.PUBLIC_URL}/oauth/google/callback`,
       })
     : undefined;
+const yelp =
+  config.YELP_API_KEY && config.YELP_USAGE_MODE === "production"
+    ? new YelpClient({ apiKey: config.YELP_API_KEY })
+    : undefined;
 const muse = config.MODEL_API_KEY
   ? new MuseClient({
       apiKey: config.MODEL_API_KEY,
       baseUrl: config.MUSE_BASE_URL,
       model: config.MUSE_MODEL,
-      yelp:
-        config.YELP_API_KEY && config.YELP_USAGE_MODE === "production"
-          ? new YelpClient({ apiKey: config.YELP_API_KEY })
-          : undefined,
+      yelp,
     })
   : undefined;
 const coordinator = new Coordinator(config, google);
 const reservations = new ReservationService(
   store,
-  new OpenTableProvider({
-    enabled: config.RESERVATIONS_ENABLED,
-    approved: config.OPENTABLE_APPROVED_ACCESS,
-    clientId: config.OPENTABLE_CLIENT_ID,
-    clientSecret: config.OPENTABLE_CLIENT_SECRET,
-    baseUrl: config.OPENTABLE_BASE_URL,
-  }),
+  config.YELP_RESERVATIONS_APPROVED
+    ? new YelpReservationProvider({
+        enabled: config.RESERVATIONS_ENABLED,
+        approved: config.YELP_RESERVATIONS_APPROVED,
+        apiKey: config.YELP_API_KEY,
+      })
+    : new OpenTableProvider({
+        enabled: config.RESERVATIONS_ENABLED,
+        approved: config.OPENTABLE_APPROVED_ACCESS,
+        clientId: config.OPENTABLE_CLIENT_ID,
+        clientSecret: config.OPENTABLE_CLIENT_SECRET,
+        baseUrl: config.OPENTABLE_BASE_URL,
+      }),
   config.CREDENTIAL_ENCRYPTION_KEY,
   JSON.parse(config.OPENTABLE_RESTAURANT_IDS),
 );
@@ -54,6 +62,7 @@ const worker = new Worker(
   muse,
   google,
   reservations,
+  yelp,
 );
 const app = createServer({
   store,

@@ -1,3 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { getDirectoryBusinesses } from "../persistence/directory.js";
+import {
+  activeDirectoryIds,
+  displayDirectoryDinner,
+} from "../application/directory-display.js";
+import { researchVersion } from "../application/research-version.js";
 import { coordinationView } from "../application/coordination.js";
 import { getReservation } from "../application/reservations.js";
 import { researchMessage } from "../application/research.js";
@@ -131,6 +138,31 @@ export async function project(
   const proposal = d.proposals.find((p) => p.version === d.activeVersion),
     stored = await tx.getCalendarConnection(record.id, user);
   const full = isMember;
+  const directoryIds = full ? activeDirectoryIds(d) : [];
+  const directoryBusinesses = await getDirectoryBusinesses(
+    tx,
+    directoryIds,
+    now,
+  );
+  const directoryById = new Map(directoryBusinesses.map((b) => [b.id, b]));
+  const displayDinner = displayDirectoryDinner(d, directoryBusinesses, now);
+  const missingDirectory = directoryIds.filter((id) => !directoryById.has(id));
+  if (full && !record.endedAt && missingDirectory.length) {
+    await tx.queue({
+      id: randomUUID(),
+      dedupeKey: `directory-refresh:${record.id}:${missingDirectory.sort().join(",")}:${Math.floor(Date.parse(now) / 60000)}`,
+      kind: "directory_refresh",
+      subjectUserId: user,
+      dinnerId: record.id,
+      payload: {
+        dinnerId: record.id,
+        userId: user,
+        revision: record.revision,
+        researchVersion: researchVersion(s),
+        candidateIds: missingDirectory,
+      },
+    });
+  }
   const required = d.members.filter((m) => m.required),
     confirmed = required.filter(
       (m) =>
@@ -151,6 +183,16 @@ export async function project(
       confirmVersion(d, user, d.activeVersion, now);
       canConfirm = true;
     } catch {}
+  }
+  if (selected) {
+    const selectedVenue =
+      d.venues.find((v) => v.id === selected.venueId) ??
+      proposal?.venues.find((v) => v.id === selected.venueId);
+    if (
+      selectedVenue?.directoryBusinessId &&
+      !directoryById.has(selectedVenue.directoryBusinessId)
+    )
+      canConfirm = false;
   }
   const verificationStatus =
     feasibility === "feasible"
@@ -202,11 +244,37 @@ export async function project(
   const reservation = full
     ? await getReservation(tx, record.id, d.activeVersion ?? undefined)
     : undefined;
+  const selectedBusiness = selected
+    ? directoryById.get(
+        d.venues.find((v) => v.id === selected.venueId)?.directoryBusinessId ??
+          "",
+      )
+    : undefined;
+  if (
+    reservation?.review &&
+    selectedBusiness &&
+    ["handoff_required", "action_needed"].includes(reservation.review.status)
+  ) {
+    reservation.review = {
+      ...reservation.review,
+      bookingUrl: selectedBusiness.url,
+      phone: selectedBusiness.phone,
+      searchUrl: undefined,
+      message:
+        "Open the current restaurant listing to check its booking link or contact the restaurant for this agreed time and party size.",
+    };
+  }
   const research = full ? await tx.getLatestResearchAttempt(record.id) : null;
   const work = await tx.client.query(
-    "SELECT EXISTS(SELECT 1 FROM outbox WHERE dinner_id=$1 AND kind='research' AND status IN ('pending','sending')) AS pending",
+    "SELECT EXISTS(SELECT 1 FROM outbox WHERE dinner_id=$1 AND kind IN ('research','web_discovery','directory_rank') AND status IN ('pending','sending')) AS pending",
     [record.id],
   );
+  const visibleResearch =
+    research &&
+    work.rows[0].pending &&
+    ["discovery", "details", "ranking"].includes(research.stage)
+      ? { ...research, status: "running" as const }
+      : research;
   return {
     ...summary(record, user),
     ...(reservation ? { reservation } : {}),
@@ -234,6 +302,77 @@ export async function project(
       ],
     },
     ...(nextAction ? { nextAction } : {}),
+    ...(organizer(s, user) &&
+    !record.endedAt &&
+    d.status === "agreed" &&
+    !reservation?.attempt &&
+    !reservation?.review
+      ? {
+          organizerQuestion: {
+            id: `booking:${d.activeVersion}`,
+            kind: "booking" as const,
+            message:
+              "Everyone has chosen this restaurant. Shall I check booking options for this exact dinner?",
+            actions: ["reservation" as const],
+          },
+        }
+      : {}),
+    ...(organizer(s, user) &&
+    !record.endedAt &&
+    (proposal?.options.length ?? 0) > 0 &&
+    (proposal?.options.length ?? 0) < 3 &&
+    research?.stage === "done" &&
+    d.status !== "agreed"
+      ? {
+          organizerQuestion: {
+            id: `more:${research.id}`,
+            kind: "search_scope" as const,
+            message:
+              "I found fewer than three choices within these details. Would you like to review the search area or dates, or keep these options?",
+            actions: ["edit_details" as const],
+          },
+        }
+      : {}),
+    ...(organizer(s, user) &&
+    !record.endedAt &&
+    research &&
+    !["queued", "running"].includes(research.status) &&
+    (research.status === "failed" || research.status === "needs_checks") &&
+    !proposal?.options.length &&
+    !work.rows[0].pending
+      ? {
+          organizerQuestion: {
+            id: research.id,
+            kind:
+              research.code === "NO_COMMON_TIME"
+                ? ("availability" as const)
+                : research.code === "NO_SUITABLE_OPTIONS"
+                  ? ("search_scope" as const)
+                  : ("research_connection" as const),
+            message:
+              research.code === "NO_COMMON_TIME"
+                ? "There is no shared dinner time yet. Would you like to review the group’s availability?"
+                : research.code === "NO_SUITABLE_OPTIONS"
+                  ? "I couldn’t find enough choices within these details. Would you like to review the area or dates, or search again with the same preferences?"
+                  : "I couldn’t finish the latest check. Your saved answers and any existing choices are safe. Would you like me to try again?",
+            actions:
+              research.code === "NO_COMMON_TIME"
+                ? ["edit_answers" as const, "edit_details" as const]
+                : ["research" as const, "edit_details" as const],
+          },
+        }
+      : {}),
+    ...(organizer(s, user) && !record.endedAt && missingDirectory.length
+      ? {
+          organizerQuestion: {
+            id: `refresh:${d.activeVersion}`,
+            kind: "research_connection" as const,
+            message:
+              "I’m refreshing the restaurant listings so everyone sees current details. You can review the dinner while I finish.",
+            actions: ["edit_details" as const],
+          },
+        }
+      : {}),
     canConfirm,
     sharedAvailability: full
       ? d.members
@@ -261,10 +400,10 @@ export async function project(
       ? {
           research: {
             id: research.id,
-            status: research.status,
+            status: visibleResearch!.status,
             requestedAt: research.requestedAt,
             updatedAt: research.updatedAt,
-            message: researchMessage(research),
+            message: researchMessage(visibleResearch!),
           },
           ...(organizer(s, user) ? { researchDetails: research } : {}),
         }
@@ -369,8 +508,35 @@ export async function project(
           return {
             index,
             venueId: option.venueId,
-            venueName: venue?.name ?? "Venue",
-            address: venue?.address ?? "",
+            venueName:
+              displayDinner.venues.find((v) => v.id === option.venueId)?.name ??
+              venue?.name ??
+              "Venue",
+            address:
+              displayDinner.venues.find((v) => v.id === option.venueId)
+                ?.address ??
+              venue?.address ??
+              "",
+            ...(option.priceEstimateKnown === false
+              ? { priceEstimateKnown: false }
+              : {}),
+            ...(venue?.directoryBusinessId &&
+            directoryById.has(venue.directoryBusinessId)
+              ? {
+                  directory: {
+                    businessId: venue.directoryBusinessId,
+                    profileUrl: directoryById.get(venue.directoryBusinessId)!
+                      .url,
+                    menuUrl: directoryById.get(venue.directoryBusinessId)!
+                      .menuUrl,
+                    phone: directoryById.get(venue.directoryBusinessId)!.phone,
+                    priceLevel: directoryById.get(venue.directoryBusinessId)!
+                      .priceLevel,
+                    expiresAt: directoryById.get(venue.directoryBusinessId)!
+                      .expiresAt,
+                  },
+                }
+              : {}),
             start: option.start,
             end: option.end,
             pricePerPerson: option.pricePerPerson,

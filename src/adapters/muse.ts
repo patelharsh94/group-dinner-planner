@@ -1,10 +1,12 @@
+import { createHash } from "node:crypto";
+import { bounded } from "../application/directory-research.js";
 import {
   ResearchFailure,
   classifyResearchFailure,
   type ResearchStage,
 } from "../application/research.js";
 import { z } from "zod";
-import { YelpError, type YelpClient } from "./yelp.js";
+import { YelpError, type YelpClient, type YelpBusiness } from "./yelp.js";
 import { preferredCuisineTerms } from "./cuisine.js";
 import type { ResearchAttempt } from "../application/research.js";
 import {
@@ -13,8 +15,15 @@ import {
   VenueListSchema,
   type Constraints,
   type DinnerSetup,
+  type Venue,
+  PublicUrlSchema,
 } from "../domain/index.js";
-import { readPublicSource, sourceContains, claimSupported } from "./sources.js";
+import {
+  readPublicSource,
+  sourceContains,
+  claimSupported,
+  normalizedSourceText,
+} from "./sources.js";
 import {
   canonicalEvidenceUrl,
   retainIndependentlyVerifiedVenues,
@@ -88,6 +97,8 @@ export class MuseClient {
     context: unknown,
     purpose: string,
     search: boolean,
+    timeoutMs = 90000,
+    maxOutputTokens = 12000,
   ): Promise<{
     result: T;
     citations: Set<string>;
@@ -99,7 +110,7 @@ export class MuseClient {
         `${this.config.baseUrl ?? "https://api.meta.ai/v1"}/responses`,
         {
           method: "POST",
-          signal: AbortSignal.timeout(90000),
+          signal: AbortSignal.timeout(timeoutMs),
           headers: {
             authorization: `Bearer ${this.config.apiKey}`,
             "content-type": "application/json",
@@ -109,7 +120,7 @@ export class MuseClient {
             store: false,
             instructions: `${instructions}\n${purpose}`,
             input: JSON.stringify(context),
-            max_output_tokens: 12000,
+            max_output_tokens: maxOutputTokens,
             ...(search
               ? {
                   tools: [{ type: "web_search" }],
@@ -270,6 +281,174 @@ export class MuseClient {
     } catch (error) {
       throw classifyResearchFailure(error);
     }
+  }
+  /** Ranking has no tools or source verification and can only return supplied opaque IDs. */
+  async rankCandidates(
+    context: ResearchContext,
+    candidates: (YelpBusiness & { menuText?: string })[],
+  ): Promise<string[]> {
+    const ids = new Set(
+      candidates.slice(0, 10).map((candidate) => candidate.id),
+    );
+    const schema = z
+      .object({
+        selectedIds: z.array(z.string()).min(Math.min(3, ids.size)).max(3),
+      })
+      .strict();
+    const { result } = await this.response(
+      schema,
+      { context, candidates: candidates.slice(0, 10) },
+      "Rank the supplied directory candidates by the group's preferences. Return the best three supplied business IDs (or all IDs when fewer than three were supplied). Never invent an ID. Directory price tiers are relative, not meal costs. Only menuText supplied in a candidate was actually read; do not infer dishes or dietary support from an unread menu URL. Unknown dietary suitability remains unknown. Do not browse or verify sources.",
+      false,
+      15000,
+      600,
+    );
+    if (
+      new Set(result.selectedIds).size !== result.selectedIds.length ||
+      result.selectedIds.some((id) => !ids.has(id))
+    )
+      throw new ResearchFailure("INVALID_OUTPUT", "ranking");
+    return result.selectedIds;
+  }
+  /** Menu text is request-local and never enters a cache, dinner, outbox or log. */
+  async readCandidateMenus(
+    candidates: YelpBusiness[],
+  ): Promise<(YelpBusiness & { menuText?: string })[]> {
+    const result: (YelpBusiness & { menuText?: string })[] = candidates.map(
+      (candidate) => ({ ...candidate }),
+    );
+    await Promise.allSettled(
+      result.slice(0, 3).map(async (candidate) => {
+        if (!candidate.menuUrl || isYelpUrl(candidate.menuUrl)) return;
+        const source = await bounded(
+          this.config.sourceReader
+            ? this.config.sourceReader(candidate.menuUrl)
+            : readPublicSource(
+                candidate.menuUrl,
+                0,
+                AbortSignal.timeout(4000),
+                (value) => !isYelpUrl(value),
+              ),
+          4000,
+        );
+        const readable = normalizedSourceText(source).slice(0, 3000);
+        if (readable.length >= 12) candidate.menuText = readable;
+      }),
+    );
+    return result;
+  }
+  /** Lightweight fallback: identity search only, never a whole dinner feasibility call. */
+  async discoverCandidates(
+    context: ResearchContext,
+    now: string,
+  ): Promise<Venue[]> {
+    const schema = z
+      .object({
+        candidates: z
+          .array(
+            z
+              .object({
+                name: z.string().min(1).max(200),
+                address: z.string().min(1).max(500),
+                city: z.string().min(1).max(120),
+                url: PublicUrlSchema,
+                excerpt: z.string().min(12).max(1500),
+              })
+              .strict(),
+          )
+          .max(3),
+      })
+      .strict();
+    const { result, citations, searchEvidence } = await this.response(
+      schema,
+      {
+        city: context.setup.city,
+        area: context.setup.area,
+        preferences: context.preferences ?? [],
+      },
+      "Find up to three restaurants inside the supplied city and area using a few focused web queries. Return only restaurant identity, address, city and one independently published non-Yelp source URL with exact identity excerpt containing name, street address and city. Do not investigate prices, diets, opening hours, travel or reservations. Do not invent a restaurant or return unsupported identity.",
+      true,
+      30000,
+      1800,
+    );
+    const sources = new Map<string, string>();
+    const fallbackEligible = new Set<string>();
+    await Promise.allSettled(
+      result.candidates.map(async (candidate) => {
+        const url = canonicalEvidenceUrl(candidate.url);
+        if (!citations.has(url) || isYelpUrl(url)) return;
+        try {
+          sources.set(
+            url,
+            await bounded(
+              this.config.sourceReader
+                ? this.config.sourceReader(url)
+                : readPublicSource(
+                    url,
+                    0,
+                    AbortSignal.timeout(4000),
+                    (value) => !isYelpUrl(value),
+                  ),
+              4000,
+            ),
+          );
+        } catch (error) {
+          if (
+            !(error instanceof z.ZodError) &&
+            !(
+              error instanceof Error &&
+              /Excluded source domain|Nonpublic source address|Too many source redirects|Invalid URL/i.test(
+                error.message,
+              )
+            )
+          )
+            fallbackEligible.add(url);
+        }
+      }),
+    );
+    const venues: Venue[] = result.candidates
+      .filter(
+        (candidate) =>
+          candidate.city.toLocaleLowerCase() ===
+          context.setup.city.toLocaleLowerCase(),
+      )
+      .map((candidate) => {
+        const unknown = {
+          status: "unknown" as const,
+          url: candidate.url,
+          retrievedAt: now,
+          excerpt: "This detail remains unresolved.",
+        };
+        return {
+          id: `web:${createHash("sha256")
+            .update(candidate.url + candidate.name + candidate.address)
+            .digest("hex")
+            .slice(0, 24)}`,
+          name: candidate.name,
+          address: candidate.address,
+          city: context.setup.city,
+          area: context.setup.area,
+          evidence: {
+            location: {
+              ...unknown,
+              status: "unknown",
+              excerpt: candidate.excerpt,
+            },
+            price: { ...unknown },
+            opening: { ...unknown },
+            reservation: { ...unknown },
+            dietary: {},
+            travel: {},
+          },
+        };
+      });
+    return retainIndependentlyVerifiedVenues(
+      venues,
+      citations,
+      sources,
+      now,
+      new Map([...searchEvidence].filter(([url]) => fallbackEligible.has(url))),
+    ).venues;
   }
   async extract(context: ExtractionContext): Promise<CoordinatorDecision> {
     return (

@@ -185,6 +185,10 @@ const evidenceBase = {
 };
 export const ClaimSchema = z.object(evidenceBase);
 export const VenueSchema = z.object({
+  directoryBusinessId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,200}$/)
+    .optional(),
   id: z.string().min(1),
   name: z.string().min(1),
   address: z.string().min(1),
@@ -245,6 +249,7 @@ export const PlanOptionSchema = z.object({
   start: iso,
   end: iso,
   pricePerPerson: z.number().nonnegative(),
+  priceEstimateKnown: z.boolean().optional(),
   priceBasis: z.enum(["per-person", "total"]),
   durationMinutes: z.number().int().positive().max(480),
 });
@@ -260,8 +265,8 @@ export type Member = z.infer<typeof MemberSchema>;
 export const ProposalSchema = z.object({
   version: z.number().int().positive(),
   createdAt: iso,
-  options: z.array(PlanOptionSchema).min(1).max(2),
-  selectedIndex: z.number().int().min(0).max(1),
+  options: z.array(PlanOptionSchema).min(1).max(3),
+  selectedIndex: z.number().int().min(0).max(2),
   revision: z.number().int(),
   setup: DinnerSetupSchema,
   memberIds: z.array(z.string()),
@@ -660,6 +665,8 @@ export function evaluateFeasibility(
     p.durationMinutes !== d.setup.durationMinutes
   )
     bad.push("Duration mismatch");
+  if (p.priceEstimateKnown === false)
+    unknown.push("Price estimate unavailable");
   if (p.priceBasis !== "per-person")
     unknown.push("Per-person price basis unresolved");
   const venue = d.venues.find((v) => v.id === p.venueId);
@@ -782,7 +789,7 @@ export function proposeOptions(
 ): Dinner {
   organizer(d, actor);
   editable(d, now);
-  const options = z.array(PlanOptionSchema).min(1).max(2).parse(inputs);
+  const options = z.array(PlanOptionSchema).min(1).max(3).parse(inputs);
   const version = (d.proposals.at(-1)?.version ?? 0) + 1;
   if (options.some((o) => Date.parse(o.start) <= Date.parse(now)))
     fail("STARTED", "Proposal must begin in the future");
@@ -1073,7 +1080,7 @@ export function exportIcs(d: Dinner, now: string): string {
     `DTEND:${utc(o.end)}`,
     `SUMMARY:${escapeIcs(`Dinner at ${v.name}`)}`,
     `LOCATION:${escapeIcs(v.address)}`,
-    `DESCRIPTION:${escapeIcs(`Estimated cost: ${o.pricePerPerson} ${d.setup.currency} per person. Reservation: ${reservation}; no booking implied by group agreement. Restaurant verification: ${verification}. Attendees: ${p.memberIds.join(", ")}. Local timezone: ${d.setup.timezone}`)}`,
+    `DESCRIPTION:${escapeIcs(`${o.priceEstimateKnown === false ? "Meal cost not confirmed" : `Estimated cost: ${o.pricePerPerson} ${d.setup.currency} per person`}. Reservation: ${reservation}; no booking implied by group agreement. Restaurant verification: ${verification}. Attendees: ${p.memberIds.join(", ")}. Local timezone: ${d.setup.timezone}`)}`,
     "STATUS:CONFIRMED",
     "END:VEVENT",
     "END:VCALENDAR",

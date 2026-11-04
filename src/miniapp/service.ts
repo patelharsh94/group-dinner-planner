@@ -1,3 +1,5 @@
+import { getDirectoryBusinesses } from "../persistence/directory.js";
+import { displayDirectoryDinner } from "../application/directory-display.js";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { DateTime } from "luxon";
@@ -351,7 +353,28 @@ export class MiniAppService {
           403,
           "Current consent and approval are required.",
         );
-      return exportIcs(r.state.dinner, this.coordinator.now());
+      const now = this.coordinator.now();
+      const active = r.state.dinner.proposals.find(
+        (p) => p.version === r.state.dinner.activeVersion,
+      );
+      const selected = active?.options[active.selectedIndex];
+      const selectedVenue =
+        r.state.dinner.venues.find((v) => v.id === selected?.venueId) ??
+        active?.venues.find((v) => v.id === selected?.venueId);
+      const ids = selectedVenue?.directoryBusinessId
+        ? [selectedVenue.directoryBusinessId]
+        : [];
+      const cached = await getDirectoryBusinesses(tx, ids, now);
+      if (cached.length !== ids.length)
+        throw new MiniAppFault(
+          "REFRESH",
+          409,
+          "Restaurant details are refreshing. Return to the dinner and download the event again shortly.",
+        );
+      return exportIcs(
+        displayDirectoryDinner(r.state.dinner, cached, now),
+        now,
+      );
     });
   }
   private async record(
@@ -1093,7 +1116,7 @@ export class MiniAppService {
         requireOwner(s, user);
         const p = z
           .object({
-            index: z.number().int().min(0).max(1),
+            index: z.number().int().min(0).max(2),
             version: z.number().int().positive(),
           })
           .parse(payload);
@@ -1108,6 +1131,23 @@ export class MiniAppService {
         break;
       }
       case "confirm": {
+        const active = s.dinner.proposals.find(
+          (p) => p.version === s.dinner.activeVersion,
+        );
+        const choice = active?.options[active.selectedIndex];
+        const v =
+          s.dinner.venues.find((v) => v.id === choice?.venueId) ??
+          active?.venues.find((v) => v.id === choice?.venueId);
+        if (
+          v?.directoryBusinessId &&
+          !(await getDirectoryBusinesses(tx, [v.directoryBusinessId], now))
+            .length
+        )
+          throw new MiniAppFault(
+            "REFRESH",
+            409,
+            "Restaurant details need a refresh. Reopen the dinner and confirm once its name and address are visible.",
+          );
         const p = z
           .object({ version: z.number().int().positive() })
           .parse(payload);
@@ -1313,8 +1353,19 @@ export class MiniAppService {
         user,
         record.revision,
       );
-    if (schedule && ready(s))
-      await this.coordinator.scheduleResearch(tx, record, event);
+    if (schedule && ready(s)) {
+      if (input.action === "staffReport")
+        await this.coordinator.scheduleVerification(tx, record, event, 1);
+      else await this.coordinator.scheduleResearch(tx, record, event);
+    }
+    if (
+      changed &&
+      (input.action === "select" ||
+        (input.action === "confirm" &&
+          !wasAgreed &&
+          s.dinner.status === "agreed"))
+    )
+      await this.coordinator.scheduleVerification(tx, record, event, 1);
     if (
       changed &&
       (input.action === "select" ||
@@ -1337,7 +1388,21 @@ export function publicFault(error: unknown): MiniAppFault {
       ["AUTHORIZATION", "MEMBERSHIP", "CONSENT"].includes(error.code)
         ? 403
         : 409,
-      "This action cannot be completed. Check your own response and refresh the dinner.",
+      (
+        {
+          STALE:
+            "This plan has changed. Review the latest option and confirm that version.",
+          FEASIBILITY:
+            "This choice conflicts with a saved requirement. Review the plan details or choose another option.",
+          NOT_READY:
+            "Before booking, everyone needs to confirm the current plan and the required restaurant checks need to be complete.",
+          RESERVATION_EXISTS:
+            "A reservation is already booked, pending or awaiting confirmation. Check its status before making another booking.",
+          ESCALATED:
+            "The organizer needs to resolve the open planning decision before confirmation.",
+        } as Record<string, string>
+      )[error.code] ??
+        "This action needs a current dinner response. Review the latest plan and try again.",
     );
   if (
     typeof error === "object" &&

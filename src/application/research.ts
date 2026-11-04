@@ -2,6 +2,10 @@ import { z } from "zod";
 export const ResearchStageSchema = z.enum([
   "queued",
   "provider",
+  "discovery",
+  "details",
+  "ranking",
+  "followup",
   "output_validation",
   "source_verification",
   "planning",
@@ -76,7 +80,7 @@ export const ResearchAttemptSchema = z
         status: z.enum(["used", "empty", "unavailable"]),
         candidateIds: z
           .array(z.string().regex(/^[A-Za-z0-9_-]{1,200}$/))
-          .max(5),
+          .max(10),
         code: z
           .enum([
             "unauthorized",
@@ -90,6 +94,10 @@ export const ResearchAttemptSchema = z
           .optional(),
       })
       .strict()
+      .optional(),
+    selectedIds: z
+      .array(z.string().regex(/^[A-Za-z0-9_-]{1,200}$/))
+      .max(3)
       .optional(),
     counts: z
       .object({
@@ -145,7 +153,7 @@ export function researchGuidance(code?: ResearchCode): string {
 export function researchMessage(attempt: ResearchAttempt): string {
   if (attempt.status === "queued") return "Research is queued.";
   if (attempt.status === "running")
-    return "Muse is researching options for the group.";
+    return "Researching restaurant options for the group.";
   if (attempt.status === "succeeded")
     return "Research completed. Review the dinner options.";
   if (attempt.status === "cancelled")

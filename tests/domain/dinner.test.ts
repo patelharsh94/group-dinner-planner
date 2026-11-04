@@ -372,7 +372,7 @@ describe("dinner aggregate requirements", () => {
       venues: [venue],
     };
     expect(() =>
-      proposeOptions(d, "a", [option, option, option], now),
+      proposeOptions(d, "a", [option, option, option, option], now),
     ).toThrow();
     const p = proposeOptions(d, "a", [option], now);
     expect(d.proposals).toHaveLength(0);
@@ -1258,4 +1258,46 @@ it("AGR-02 records unanimous group choice while restaurant checks remain pending
   expect(exportIcs(d, now)).toContain("Reservation: unknown");
   d.constraints.b.availability = [];
   expect(() => confirmVersion(d, "a", d.activeVersion!, now)).toThrow();
+});
+
+it("SHORTLIST-01 supports three version-bound choices and selecting the third", () => {
+  let d = ready();
+  d = setVenues(
+    d,
+    "a",
+    [venue, { ...venue, id: "v2" }, { ...venue, id: "v3" }],
+    now,
+  );
+  d = proposeOptions(
+    d,
+    "a",
+    [option, { ...option, venueId: "v2" }, { ...option, venueId: "v3" }],
+    now,
+  );
+  expect(d.proposals.at(-1)?.options).toHaveLength(3);
+  d = selectAlternative(d, "a", 2, now);
+  expect(d.proposals.at(-1)?.options[0]?.venueId).toBe("v3");
+});
+it("SHORTLIST-01 an unknown meal estimate is not a verified zero-price meal", () => {
+  const d = setVenues(
+    ready(),
+    "a",
+    [
+      {
+        ...venue,
+        evidence: {
+          ...venue.evidence,
+          price: { ...venue.evidence.price, amount: 0 },
+        },
+      },
+    ],
+    now,
+  );
+  expect(
+    evaluateFeasibility(
+      d,
+      { ...option, pricePerPerson: 0, priceEstimateKnown: false },
+      now,
+    ).status,
+  ).toBe("unresolved");
 });

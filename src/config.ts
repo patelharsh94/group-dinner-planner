@@ -28,6 +28,10 @@ export const ConfigSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
+  YELP_RESERVATIONS_APPROVED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   OPENTABLE_APPROVED_ACCESS: z
     .enum(["true", "false"])
     .default("false")

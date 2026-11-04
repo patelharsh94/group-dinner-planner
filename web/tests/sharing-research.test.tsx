@@ -286,7 +286,7 @@ describe("safe latest research diagnostics", () => {
     );
     expect(
       screen.getByRole("region", { name: "Latest research" }).textContent,
-    ).toContain(research.message);
+    ).toContain("The organizer is reviewing the next step");
     expect(screen.queryByText("AUTH_INVALID")).toBeNull();
     expect(screen.queryByText(/MODEL_API_KEY/)).toBeNull();
   });
@@ -305,7 +305,13 @@ describe("safe latest research diagnostics", () => {
       render(<Dashboard {...dashboardProps} dinner={dinner} />);
       expect(
         screen.getByRole("region", { name: "Latest research" }).textContent,
-      ).toContain(`Safe ${status} message`);
+      ).toContain(
+        status === "needs_checks"
+          ? "Research needs another pass"
+          : status === "cancelled"
+            ? "Research cancelled"
+            : "Earlier research was superseded",
+      );
     },
   );
 });

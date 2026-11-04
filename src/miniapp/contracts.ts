@@ -141,6 +141,12 @@ export interface DinnerView extends DinnerSummary {
     "id" | "status" | "requestedAt" | "updatedAt"
   > & { message: string };
   researchDetails?: ResearchAttempt;
+  organizerQuestion?: {
+    id: string;
+    kind: "availability" | "search_scope" | "research_connection" | "booking";
+    message: string;
+    actions: ("research" | "edit_details" | "edit_answers" | "reservation")[];
+  };
   setup: Pick<
     DinnerSetup,
     | "city"
@@ -185,6 +191,17 @@ export interface DinnerView extends DinnerSummary {
     start: string;
     end: string;
     pricePerPerson: number;
+    priceEstimateKnown?: boolean;
+    directory?: {
+      businessId: string;
+      profileUrl: string;
+      menuUrl?: string;
+      websiteUrl?: string;
+      phone?: string;
+      priceLevel?: string;
+      expiresAt: string;
+      hoursState?: string;
+    };
     currency: string;
     reservationUrl: string;
     reservationState: string;

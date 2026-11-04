@@ -139,11 +139,19 @@ export class ReservationService {
     await this.unblocked(tx, record.id);
     const { bookingUrl, phone, venue } = fallback(record),
       capability = this.provider.capability();
-    const restaurantId = bookingUrl
-      ? this.restaurantIds[bookingUrl]
-      : undefined;
+    const selectedVenue =
+      record.state.dinner.venues.find(
+        (candidate) => candidate.id === option.venueId,
+      ) ?? venue;
+    const restaurantId =
+      capability.provider === "yelp"
+        ? selectedVenue?.directoryBusinessId
+        : bookingUrl
+          ? this.restaurantIds[bookingUrl]
+          : undefined;
     const slot: ReservationSlot | undefined =
-      restaurantId && /^\d+$/.test(restaurantId)
+      restaurantId &&
+      (capability.provider === "yelp" || /^\d+$/.test(restaurantId))
         ? {
             restaurantId,
             partySize: record.state.dinner.members.length,
@@ -228,6 +236,7 @@ export class ReservationService {
       review = r.rows[0]?.review as ReservationReview | undefined;
     if (
       !review ||
+      review.provider !== this.provider.capability().provider ||
       review.status !== "ready" ||
       !review.expiresAt ||
       Date.parse(review.expiresAt) <= Date.parse(now) ||
@@ -337,11 +346,19 @@ export class ReservationService {
         await this.store.markSuppressed(work.id, workerId);
         return;
       }
-      const result = await this.provider.availability(pending.slot);
+      const providerMatches =
+        pending.review.provider === this.provider.capability().provider;
+      const result = providerMatches
+        ? await this.provider.availability(pending.slot)
+        : {
+            status: "handoff_required" as const,
+            message:
+              "Reservation provider changed. Review the current plan again.",
+          };
       await this.store.processWork(work.id, workerId, async (tx) => {
         const record = await tx.getDinner<AppDinner>(payload.dinnerId);
         let valid = false;
-        if (record) {
+        if (record && providerMatches) {
           try {
             assertPlan(
               record,
@@ -404,6 +421,11 @@ export class ReservationService {
         if (!record) throw new Error();
         assertPlan(record, record.organizerId, row.version, this.clock());
         if (!row.encrypted_contact) throw new Error();
+        if (
+          row.attempt.provider !== this.provider.capability().provider ||
+          !this.provider.capability().available
+        )
+          throw new Error();
       } catch {
         await tx.client.query(
           "UPDATE reservation_attempts SET attempt=attempt || $2::jsonb,encrypted_contact=NULL WHERE id=$1",
@@ -457,7 +479,13 @@ export class ReservationService {
           this.store.transaction(async (tx) => {
             const current = await tx.getDinner<AppDinner>(payload.dinnerId);
             try {
-              if (!current) return false;
+              if (
+                !current ||
+                pending.attempt.provider !==
+                  this.provider.capability().provider ||
+                !this.provider.capability().available
+              )
+                return false;
               assertPlan(
                 current,
                 current.organizerId,

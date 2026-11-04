@@ -117,6 +117,8 @@ export function sharedPlan(s: AppDinner, now: string): string {
     proposal = d.proposals.find((p) => p.version === d.activeVersion);
   if (!proposal)
     return `Dinner ${d.id}: ${progress(s)}\nA current proposal is needed. Existing reservations are unchanged.`;
+  if (proposal.venues.some((v) => v.directoryBusinessId))
+    return `Dinner ${d.id}: ${proposal.options.length} restaurant suggestions are ready in Dinner Planner. Open the planner for current names, menus, and prices. ${progress(s)}. A reservation is confirmed separately.`;
   const options = proposal.options.map((option, i) => {
     const venue = proposal.venues.find((v) => v.id === option.venueId)!;
     const local = DateTime.fromISO(option.start)

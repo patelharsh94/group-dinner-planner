@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   DinnerView,
   MiniAppActionName,
 } from "../../src/miniapp/contracts";
 import { Button, Field, Notice } from "./components";
+import { planTime } from "./time";
 export function ReservationPanel({
   dinner: d,
   busy,
@@ -27,6 +28,11 @@ export function ReservationPanel({
   });
   const review = d.reservation?.review,
     attempt = d.reservation?.attempt;
+  useEffect(() => {
+    setConsent(false);
+    setReported(false);
+  }, [review?.reviewId, d.activeVersion]);
+  const option = d.options[0];
   const blocked =
     !!attempt &&
     [
@@ -44,7 +50,12 @@ export function ReservationPanel({
     (!d.verification && d.status === "agreed");
   if (!d.options.length && !attempt) return null;
   const canManage =
-    owner && active && agreed && !blocked && !d.reservation?.mismatch;
+    owner &&
+    d.own.consent &&
+    active &&
+    agreed &&
+    !blocked &&
+    !d.reservation?.mismatch;
   const freshReview = review?.version === d.activeVersion;
   return (
     <section
@@ -54,17 +65,23 @@ export function ReservationPanel({
     >
       <h2>Reservation</h2>
       <strong>
-        {attempt?.status === "booked"
+        {attempt?.status === "booked" && attempt.reference
           ? "Reservation confirmed"
           : attempt?.status === "organizer_reported"
             ? "Organizer reported a reservation"
-            : attempt?.status === "unknown"
+            : attempt?.status === "unknown" || attempt?.status === "booked"
               ? "Reservation outcome needs checking"
               : attempt?.status === "queued" || attempt?.status === "submitting"
                 ? "Booking is in progress"
                 : "No confirmed reservation yet"}
       </strong>
-      {attempt && <p className="muted small">{attempt.message}</p>}
+      {attempt && (
+        <p className="muted small">
+          {attempt.status === "booked" && !attempt.reference
+            ? "The provider has not supplied a confirmation reference. Check the outcome before booking again."
+            : attempt.message}
+        </p>
+      )}
       {attempt?.reference && (
         <p className="small">Reference: {attempt.reference}</p>
       )}
@@ -93,11 +110,26 @@ export function ReservationPanel({
             void onAction("reviewReservation", { version: d.activeVersion })
           }
         >
-          Review reservation options
+          Book this restaurant
         </Button>
       )}
       {freshReview && review && (
         <>
+          {option && (
+            <div className="reservation-summary">
+              <h3>{option.venueName}</h3>
+              <p className="small">{option.address}</p>
+              <p className="small">
+                {planTime(option.start, option.end, d.setup.timezone)} ·{" "}
+                {d.setup.timezone.replaceAll("_", " ")}
+              </p>
+              <p className="small">
+                {d.members.length}{" "}
+                {d.members.length === 1 ? "person" : "people"} · Plan{" "}
+                {review.version}
+              </p>
+            </div>
+          )}
           <p className="muted small">{review.message}</p>
           {review.status === "checking" && (
             <Notice>
@@ -197,11 +229,16 @@ export function ReservationPanel({
                 </select>
               </Field>
               <a
-                href="https://www.opentable.com/legal/terms-and-conditions"
+                href={
+                  review.provider === "yelp"
+                    ? "https://terms.yelp.com/tos/en_us/"
+                    : "https://www.opentable.com/legal/terms-and-conditions"
+                }
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                Review OpenTable booking terms
+                Review {review.provider === "yelp" ? "Yelp" : "OpenTable"}{" "}
+                booking terms
               </a>
               <label className="check-label consent">
                 <input
@@ -224,6 +261,11 @@ export function ReservationPanel({
             (review.status === "handoff_required" ||
               review.status === "action_needed") && (
               <>
+                <Notice>
+                  Direct booking is unavailable for this restaurant. Complete
+                  the reservation with the restaurant or its booking site, then
+                  report it here.
+                </Notice>
                 {review.searchUrl && (
                   <a
                     className="button button-primary"
@@ -241,7 +283,7 @@ export function ReservationPanel({
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    Open verified reservation handoff
+                    Open restaurant or booking page
                   </a>
                 )}
                 {review.phone && (

@@ -45,5 +45,8 @@ export function planCheckMessage(reason: string): string {
     "Participant staff allergy report required":
       "For your allergy, report confirmation from restaurant staff before relying on accommodation.",
   };
-  return messages[reason] ?? reason;
+  return (
+    messages[reason] ??
+    "This detail still needs confirmation before you rely on it."
+  );
 }

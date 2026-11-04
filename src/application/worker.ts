@@ -1,3 +1,16 @@
+import {
+  getDirectoryBusinesses,
+  putDirectoryBusinesses,
+  purgeDirectoryBusinesses,
+} from "../persistence/directory.js";
+import {
+  bounded,
+  discoverDirectory,
+  directoryVenue,
+  directoryOptions,
+  type DirectoryClient,
+} from "./directory-research.js";
+import { YelpError } from "../adapters/yelp.js";
 import type { ReservationService } from "./reservations.js";
 import {
   ResearchFailure,
@@ -50,6 +63,11 @@ const JobSchema = z.object({
   verificationOnly: z.boolean().optional(),
   pass: z.number().int().optional(),
   version: z.number().int().optional(),
+  candidateIds: z
+    .array(z.string().regex(/^[A-Za-z0-9_-]{1,200}$/))
+    .max(10)
+    .optional(),
+  attemptId: z.string().optional(),
 });
 export class Worker {
   private workerId = randomUUID();
@@ -65,6 +83,7 @@ export class Worker {
     readonly muse?: MuseClient,
     readonly google?: GoogleCalendar,
     readonly reservations?: ReservationService,
+    readonly yelp?: DirectoryClient,
   ) {}
   start(): void {
     this.stopped = false;
@@ -96,6 +115,9 @@ export class Worker {
       "extract",
       "calendar",
       "research",
+      "directory_rank",
+      "directory_refresh",
+      "web_discovery",
       "verify",
       "reservation",
       "revoke",
@@ -125,6 +147,7 @@ export class Worker {
     if (this.ticks++ % 30 === 0) {
       await this.sweep();
       await this.store.purgeExpired();
+      await purgeDirectoryBusinesses(this.store.pool, this.coordinator.now());
     }
   }
   private async drainInbox(): Promise<void> {
@@ -284,7 +307,12 @@ export class Worker {
     if (
       record.revision !== job.revision &&
       !(
-        work.kind === "research" &&
+        [
+          "research",
+          "directory_rank",
+          "directory_refresh",
+          "web_discovery",
+        ].includes(work.kind ?? "") &&
         job.researchVersion === researchVersion(record.state)
       )
     ) {
@@ -293,6 +321,22 @@ export class Worker {
     }
     const startedMs = Date.now();
     try {
+      if (work.kind === "web_discovery") {
+        await this.discoverWeb(work, record, job);
+        return;
+      }
+      if (work.kind === "directory_refresh") {
+        await this.refreshDirectory(work, record, job);
+        return;
+      }
+      if (work.kind === "directory_rank") {
+        await this.rankDirectory(work, record, job);
+        return;
+      }
+      if (work.kind === "research" && !job.verificationOnly && this.yelp) {
+        await this.discoverAndPublish(work, record, job);
+        return;
+      }
       if (work.kind === "research")
         await this.researchProgress(work, record, {
           status: "running",
@@ -338,7 +382,31 @@ export class Worker {
           );
           if (option && venue) {
             context.slots = [{ start: option.start, end: option.end }];
-            context.targetVenue = { name: venue.name, address: venue.address };
+            const cached = venue.directoryBusinessId
+              ? (
+                  await getDirectoryBusinesses(
+                    this.store.pool,
+                    [venue.directoryBusinessId],
+                    this.coordinator.now(),
+                  )
+                )[0]
+              : undefined;
+            if (venue.directoryBusinessId && !cached) {
+              await this.commitResult(work, record, job.userId, async (tx) => {
+                await tx.updateResearchAttempt(work.id, {
+                  status: "needs_checks",
+                  stage: "done",
+                  code: "EVIDENCE_UNRESOLVED",
+                  finishedAt: this.coordinator.now(),
+                  updatedAt: this.coordinator.now(),
+                });
+              });
+              return;
+            }
+            context.targetVenue = {
+              name: cached?.name ?? venue.name,
+              address: cached?.address ?? venue.address,
+            };
           }
         }
         const result = await this.muse.research(
@@ -384,12 +452,17 @@ export class Worker {
                 o = p?.options[p.selectedIndex];
               const oldVenue = s.dinner.venues.find((v) => v.id === o?.venueId);
               const normalize = (v: string) =>
-                v.toLowerCase().replace(/[^a-z0-9]/g, "");
+                v
+                  .normalize("NFKC")
+                  .toLocaleLowerCase()
+                  .replace(/[^\p{L}\p{N}]/gu, "");
               const checked = result.venues.find(
                 (v) =>
                   oldVenue &&
-                  normalize(v.name) === normalize(oldVenue.name) &&
-                  normalize(v.address) === normalize(oldVenue.address),
+                  normalize(v.name) ===
+                    normalize(context.targetVenue?.name ?? oldVenue.name) &&
+                  normalize(v.address) ===
+                    normalize(context.targetVenue?.address ?? oldVenue.address),
               );
               if (checked && oldVenue)
                 for (const key of [
@@ -407,7 +480,55 @@ export class Worker {
                       checked.evidence[key],
                     );
                 }
-              await this.coordinator.save(tx, current, s);
+              if (checked && oldVenue) {
+                for (const key of ["dietary", "travel"] as const) {
+                  const allowedKeys =
+                    key === "dietary"
+                      ? new Set(context.dietary.map((item) => item.requirement))
+                      : new Set(Object.values(aliases));
+                  for (const [requirement, claim] of Object.entries(
+                    checked.evidence[key],
+                  ))
+                    if (
+                      allowedKeys.has(requirement) &&
+                      (claim.status === "known" ||
+                        claim.status === "contradictory")
+                    )
+                      (oldVenue.evidence[key] as Record<string, unknown>)[
+                        requirement
+                      ] = structuredClone(claim);
+                }
+              }
+              let materialPriceChange = false;
+              if (oldVenue && o && p && o.priceEstimateKnown === false) {
+                const price = oldVenue.evidence.price;
+                if (
+                  price.status === "known" &&
+                  price.amount !== undefined &&
+                  price.currency === s.dinner.setup.currency &&
+                  price.basis
+                ) {
+                  const amount =
+                    price.basis === "total"
+                      ? price.amount / context.partySize
+                      : price.amount;
+                  const updated = {
+                    ...o,
+                    pricePerPerson: amount,
+                    priceEstimateKnown: true,
+                  };
+                  s.dinner = proposeOptions(
+                    s.dinner,
+                    s.dinner.organizerId,
+                    [updated, ...p.options.filter((option) => option !== o)],
+                    this.coordinator.now(),
+                  );
+                  materialPriceChange = true;
+                }
+              }
+              const saved = await this.coordinator.save(tx, current, s);
+              if (materialPriceChange)
+                await this.coordinator.announce(tx, s, work.id);
               await tx.updateResearchAttempt(work.id, {
                 status: "needs_checks",
                 stage: "done",
@@ -424,7 +545,7 @@ export class Worker {
               )
                 await this.coordinator.scheduleVerification(
                   tx,
-                  { ...current, state: s },
+                  saved,
                   work.id,
                   (job.pass ?? 1) + 1,
                 );
@@ -614,6 +735,12 @@ export class Worker {
           !authorized(current.state, job.userId)
         )
           return;
+        if (
+          work.kind === "directory_rank" ||
+          work.kind === "directory_refresh" ||
+          work.kind === "web_discovery"
+        )
+          return;
         if (work.kind === "research") {
           const now = this.coordinator.now();
           if (
@@ -684,6 +811,411 @@ export class Worker {
       });
     }
   }
+  private async discoverAndPublish(
+    work: ClaimedWork,
+    record: DinnerRecord<AppDinner>,
+    job: z.infer<typeof JobSchema>,
+  ): Promise<void> {
+    if (!canPlan(record.state)) throw new Error("Required consent unavailable");
+    const { context } = researchContext(record.state, this.coordinator.now());
+    if (!context.slots.length)
+      throw new ResearchFailure("NO_COMMON_TIME", "planning");
+    await this.researchProgress(work, record, {
+      status: "running",
+      stage: "discovery",
+      startedAt: this.coordinator.now(),
+    });
+    // Resume the most recent checkpoint for these exact planning inputs. Only IDs are durable.
+    const checkpoint = await this.store.transaction(async (tx) => {
+      const result = await tx.client.query(
+        "SELECT attempt FROM research_runs WHERE dinner_id=$1 AND input_version=$2 AND attempt->'discovery'->>'status'='used' ORDER BY requested_at DESC,sequence DESC LIMIT 1",
+        [record.id, researchVersion(record.state)],
+      );
+      return result.rows[0]?.attempt as ResearchAttempt | undefined;
+    });
+    const activeProposal = record.state.dinner.proposals.find(
+      (proposal) => proposal.version === record.state.dinner.activeVersion,
+    );
+    const sameInputs =
+      activeProposal &&
+      JSON.stringify(activeProposal.constraints) ===
+        JSON.stringify(record.state.dinner.constraints) &&
+      JSON.stringify(activeProposal.setup) ===
+        JSON.stringify(record.state.dinner.setup);
+    const reusableIds =
+      checkpoint?.discovery?.candidateIds ??
+      (sameInputs
+        ? record.state.dinner.venues
+            .flatMap((venue) =>
+              venue.directoryBusinessId ? [venue.directoryBusinessId] : [],
+            )
+            .slice(0, 10)
+        : []);
+    let candidates = await getDirectoryBusinesses(
+      this.store.pool,
+      reusableIds,
+      this.coordinator.now(),
+    );
+    if (!candidates.length) {
+      try {
+        candidates = await bounded(
+          discoverDirectory(this.yelp!, context),
+          16000,
+        );
+      } catch (error) {
+        await this.researchProgress(work, record, {
+          discovery: {
+            provider: "yelp",
+            status: "unavailable",
+            candidateIds: [],
+            code: error instanceof YelpError ? error.code : "network",
+          },
+        });
+        const code =
+          error instanceof YelpError
+            ? (
+                {
+                  unauthorized: "AUTH_INVALID",
+                  forbidden: "ACCESS_DENIED",
+                  rate_limited: "RATE_LIMITED",
+                  network: "NETWORK",
+                  invalid_response: "INVALID_OUTPUT",
+                  invalid_request: "REQUEST_REJECTED",
+                  upstream: "PROVIDER_UNAVAILABLE",
+                } as const
+              )[error.code]
+            : "TIMEOUT";
+        await this.queueWebDiscovery(work, record, job, code);
+        return;
+      }
+    }
+    if (!candidates.length) {
+      await this.researchProgress(work, record, {
+        discovery: { provider: "yelp", status: "empty", candidateIds: [] },
+      });
+      await this.queueWebDiscovery(work, record, job, "NO_SUITABLE_OPTIONS");
+      return;
+    }
+    await putDirectoryBusinesses(
+      this.store.pool,
+      candidates,
+      this.coordinator.now(),
+    );
+    const ids = candidates.map((candidate) => candidate.id).slice(0, 10);
+    await this.researchProgress(work, record, {
+      stage: "details",
+      discovery: { provider: "yelp", status: "used", candidateIds: ids },
+    });
+    const details = await Promise.allSettled(
+      candidates.map((candidate) =>
+        bounded(this.yelp!.details(candidate.id), 15000),
+      ),
+    );
+    candidates = candidates.map((candidate, index) =>
+      details[index].status === "fulfilled" &&
+      details[index].value.id === candidate.id
+        ? details[index].value
+        : candidate,
+    );
+    await putDirectoryBusinesses(
+      this.store.pool,
+      candidates,
+      this.coordinator.now(),
+    );
+    candidates = candidates.filter((candidate) => candidate.isClosed !== true);
+    const openIds = candidates.map((candidate) => candidate.id);
+    if (!openIds.length) {
+      await this.queueWebDiscovery(work, record, job, "NO_SUITABLE_OPTIONS");
+      return;
+    }
+    await this.commitResult(work, record, job.userId, async (tx, current) => {
+      const s = structuredClone(current.state);
+      // A resumed job must not replace a published choice set or clear interactions.
+      const active = s.dinner.proposals.find(
+        (p) => p.version === s.dinner.activeVersion,
+      );
+      const reuse =
+        active &&
+        active.options.every((option) =>
+          option.venueId.startsWith("directory:"),
+        ) &&
+        JSON.stringify(active.constraints) ===
+          JSON.stringify(s.dinner.constraints) &&
+        JSON.stringify(active.setup) === JSON.stringify(s.dinner.setup) &&
+        JSON.stringify(active.memberIds) ===
+          JSON.stringify(
+            s.dinner.members
+              .filter((member) => member.required)
+              .map((member) => member.id),
+          );
+      if (!reuse) {
+        s.dinner = setVenues(
+          s.dinner,
+          s.dinner.organizerId,
+          openIds.map((id, index) =>
+            directoryVenue(id, index, context, this.coordinator.now()),
+          ),
+          this.coordinator.now(),
+        );
+        const options = directoryOptions(openIds, context).filter(
+          (option) =>
+            evaluateFeasibility(s.dinner, option, this.coordinator.now())
+              .status !== "infeasible",
+        );
+        if (!options.length)
+          throw new ResearchFailure("NO_SUITABLE_OPTIONS", "planning");
+        s.dinner = proposeOptions(
+          s.dinner,
+          s.dinner.organizerId,
+          options,
+          this.coordinator.now(),
+        );
+      }
+      const next = reuse
+        ? current
+        : await this.coordinator.save(tx, current, s);
+      const selectedIds = next.state.dinner.proposals
+        .find((p) => p.version === next.state.dinner.activeVersion)!
+        .options.map((option) => option.venueId.replace(/^directory:/, ""));
+      await tx.updateResearchAttempt(work.id, {
+        status: "needs_checks",
+        stage: "ranking",
+        code: "EVIDENCE_UNRESOLVED",
+        selectedIds,
+        updatedAt: this.coordinator.now(),
+        finishedAt: this.coordinator.now(),
+      });
+      // The discovery lease completes with a usable active shortlist BEFORE any model call.
+      await this.coordinator.job(
+        tx,
+        work.id,
+        "directory_rank",
+        record.id,
+        job.userId,
+        next.revision,
+        {
+          candidateIds: openIds,
+          researchVersion: researchVersion(next.state),
+          version: next.state.dinner.activeVersion,
+          attemptId: work.id,
+        },
+      );
+      if (!reuse) await this.coordinator.announce(tx, next.state, work.id);
+    });
+  }
+  private async queueWebDiscovery(
+    work: ClaimedWork,
+    record: DinnerRecord<AppDinner>,
+    job: z.infer<typeof JobSchema>,
+    code: import("./research.js").ResearchCode,
+  ): Promise<void> {
+    await this.commitResult(work, record, job.userId, async (tx, current) => {
+      await tx.updateResearchAttempt(work.id, {
+        status: "needs_checks",
+        stage: "discovery",
+        code,
+        updatedAt: this.coordinator.now(),
+      });
+      await this.coordinator.job(
+        tx,
+        work.id,
+        "web_discovery",
+        current.id,
+        job.userId,
+        current.revision,
+        { researchVersion: researchVersion(current.state), attemptId: work.id },
+      );
+    });
+  }
+  private async discoverWeb(
+    work: ClaimedWork,
+    record: DinnerRecord<AppDinner>,
+    job: z.infer<typeof JobSchema>,
+  ): Promise<void> {
+    const { context } = researchContext(record.state, this.coordinator.now());
+    let venues: Awaited<ReturnType<MuseClient["discoverCandidates"]>> = [];
+    try {
+      if (this.muse && context.slots.length)
+        venues = await bounded(
+          this.muse.discoverCandidates(context, this.coordinator.now()),
+          35000,
+        );
+    } catch {
+      /* Keep any existing active choices if independent discovery cannot finish. */
+    }
+    await this.commitResult(work, record, job.userId, async (tx, current) => {
+      const s = structuredClone(current.state);
+      const active = s.dinner.proposals.find(
+        (proposal) => proposal.version === s.dinner.activeVersion,
+      );
+      if (active || !venues.length) {
+        if (job.attemptId)
+          await tx.updateResearchAttempt(job.attemptId, {
+            status: "needs_checks",
+            stage: "done",
+            code: venues.length ? "EVIDENCE_UNRESOLVED" : "NO_SUITABLE_OPTIONS",
+            updatedAt: this.coordinator.now(),
+            finishedAt: this.coordinator.now(),
+          });
+        if (!venues.length)
+          await this.coordinator.message(
+            tx,
+            work.id,
+            job.userId,
+            active
+              ? "The restaurant search could not find additional verified choices. Your current options are still available. Open the planner to review or adjust the area or cuisine."
+              : "The restaurant directory and focused web search could not find verified choices. Which nearby area or cuisine should we try? Open the planner to adjust the search and retry.",
+            {
+              dinnerId: record.id,
+              buttons: this.coordinator.plannerButtons({ dinner: record.id }),
+            },
+          );
+        return;
+      }
+      s.dinner = setVenues(
+        s.dinner,
+        s.dinner.organizerId,
+        venues,
+        this.coordinator.now(),
+      );
+      const options = venues
+        .slice(0, 3)
+        .map((venue) => ({
+          venueId: venue.id,
+          ...context.slots[0],
+          pricePerPerson: 0,
+          priceEstimateKnown: false,
+          priceBasis: "per-person" as const,
+          durationMinutes: context.setup.durationMinutes,
+        }))
+        .filter(
+          (option) =>
+            evaluateFeasibility(s.dinner, option, this.coordinator.now())
+              .status !== "infeasible",
+        );
+      if (!options.length) return;
+      s.dinner = proposeOptions(
+        s.dinner,
+        s.dinner.organizerId,
+        options,
+        this.coordinator.now(),
+      );
+      const next = await this.coordinator.save(tx, current, s);
+      if (job.attemptId)
+        await tx.updateResearchAttempt(job.attemptId, {
+          status: "needs_checks",
+          stage: "followup",
+          code: "EVIDENCE_UNRESOLVED",
+          updatedAt: this.coordinator.now(),
+          finishedAt: this.coordinator.now(),
+        });
+      await this.coordinator.announce(tx, s, work.id);
+      await this.coordinator.scheduleVerification(tx, next, work.id, 1);
+    });
+  }
+  private async refreshDirectory(
+    work: ClaimedWork,
+    record: DinnerRecord<AppDinner>,
+    job: z.infer<typeof JobSchema>,
+  ): Promise<void> {
+    if (!this.yelp) {
+      await this.store.markSuppressed(work.id, this.workerId);
+      return;
+    }
+    const results = await Promise.allSettled(
+      (job.candidateIds ?? []).map((id) =>
+        bounded(this.yelp!.details(id), 15000),
+      ),
+    );
+    await this.commitResult(work, record, job.userId, async (tx) => {
+      const businesses = results.flatMap((result, index) =>
+        result.status === "fulfilled" &&
+        result.value.id === job.candidateIds?.[index]
+          ? [result.value]
+          : [],
+      );
+      await putDirectoryBusinesses(tx, businesses, this.coordinator.now());
+    });
+  }
+  private async rankDirectory(
+    work: ClaimedWork,
+    record: DinnerRecord<AppDinner>,
+    job: z.infer<typeof JobSchema>,
+  ): Promise<void> {
+    const { context } = researchContext(record.state, this.coordinator.now());
+    const candidates = await getDirectoryBusinesses(
+      this.store.pool,
+      job.candidateIds ?? [],
+      this.coordinator.now(),
+    );
+    let selectedIds = candidates.slice(0, 3).map((candidate) => candidate.id);
+    if (this.muse && candidates.length) {
+      try {
+        const enriched =
+          typeof this.muse.readCandidateMenus === "function"
+            ? await bounded(this.muse.readCandidateMenus(candidates), 4100)
+            : candidates;
+        selectedIds = await bounded(
+          this.muse.rankCandidates(context, enriched),
+          15000,
+        );
+      } catch {
+        /* Stable directory ordering is the deterministic ranking fallback. */
+      }
+    }
+    await this.commitResult(work, record, job.userId, async (tx, current) => {
+      if (
+        !selectedIds.length ||
+        current.state.dinner.activeVersion !== job.version
+      )
+        return;
+      let next = current;
+      const s = structuredClone(current.state),
+        d = s.dinner;
+      const active = d.proposals.find((p) => p.version === d.activeVersion)!;
+      const untouched =
+        current.revision === job.revision &&
+        !Object.values(d.confirmations).some(
+          (version) => version === d.activeVersion,
+        ) &&
+        !d.disputes.some((dispute) => dispute.open) &&
+        active.selectedIndex === 0;
+      const changed =
+        JSON.stringify(active.options.map((option) => option.venueId)) !==
+        JSON.stringify(selectedIds.map((id) => `directory:${id}`));
+      if (
+        untouched &&
+        changed &&
+        selectedIds.every((id) =>
+          d.venues.some((venue) => venue.directoryBusinessId === id),
+        )
+      ) {
+        const options = directoryOptions(selectedIds, context).filter(
+          (option) =>
+            evaluateFeasibility(d, option, this.coordinator.now()).status !==
+            "infeasible",
+        );
+        if (options.length) {
+          s.dinner = proposeOptions(
+            d,
+            d.organizerId,
+            options,
+            this.coordinator.now(),
+          );
+          next = await this.coordinator.save(tx, current, s);
+          await this.coordinator.announce(tx, s, work.id);
+        }
+      }
+      if (job.attemptId)
+        await tx.updateResearchAttempt(job.attemptId, {
+          stage: "followup",
+          selectedIds,
+          updatedAt: this.coordinator.now(),
+        });
+      // One venue and one slot per follow-up; no whole-shortlist web request.
+      await this.coordinator.scheduleVerification(tx, next, work.id, 1);
+    });
+  }
   private async commitResult(
     work: ClaimedWork,
     record: DinnerRecord<AppDinner>,
@@ -702,7 +1234,12 @@ export class Worker {
       if (
         current.revision !== record.revision &&
         !(
-          work.kind === "research" &&
+          [
+            "research",
+            "directory_rank",
+            "directory_refresh",
+            "web_discovery",
+          ].includes(work.kind ?? "") &&
           researchVersion(current.state) === researchVersion(record.state)
         )
       ) {

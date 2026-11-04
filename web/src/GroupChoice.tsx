@@ -66,8 +66,10 @@ export function GroupChoice({
         </p>
         <p>
           <Icon name="people" size={17} />
-          {d.members.filter((m) => m.required).length} people · About{" "}
-          {option.currency} {option.pricePerPerson} per person
+          {d.members.filter((m) => m.required).length} people ·{" "}
+          {option.priceEstimateKnown === false
+            ? "Meal cost not confirmed"
+            : `About ${option.currency} ${option.pricePerPerson} per person`}
         </p>
       </div>
       <div className="agreement-status">
@@ -147,24 +149,27 @@ export function VerificationStatus({ dinner }: { dinner: DinnerView }) {
               : "Some details unconfirmed"}
         </span>
       </div>
-      {verification.checks.length ? (
-        <ul className="verification-checks">
-          {verification.checks.map((check, i) => (
-            <li key={i}>
-              <span className={`check-state ${check.status}`}>
-                {check.status === "ready" ? "✓" : "·"}
-              </span>
-              <span>{check.message}</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted small">
-          {verification.status === "ready"
-            ? "The represented plan checks are complete."
-            : "Some details could not be confirmed from available sources. You can still choose this restaurant when confirmation is available. A table has not been reserved."}
-        </p>
-      )}
+      <details className="source-details">
+        <summary>Details to confirm</summary>
+        {verification.checks.length ? (
+          <ul className="verification-checks">
+            {verification.checks.map((check, i) => (
+              <li key={i}>
+                <span className={`check-state ${check.status}`}>
+                  {check.status === "ready" ? "✓" : "·"}
+                </span>
+                <span>{check.message}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted small">
+            {verification.status === "ready"
+              ? "The represented plan checks are complete."
+              : "Some details could not be confirmed from available sources. You can still choose this restaurant when confirmation is available. A table has not been reserved."}
+          </p>
+        )}
+      </details>
     </section>
   );
 }

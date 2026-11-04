@@ -15,6 +15,7 @@ const pg = new EmbeddedPostgres({
   onLog: () => {},
   onError: () => {},
 });
+let testExitCode = 1;
 try {
   await pg.initialise();
   await pg.start();
@@ -31,10 +32,14 @@ try {
       },
     },
   );
-  process.exitCode = await new Promise<number>((resolve, reject) => {
+  testExitCode = await new Promise<number>((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code) => resolve(code ?? 1));
   });
 } finally {
-  await pg.stop();
+  try {
+    await pg.stop();
+  } finally {
+    process.exitCode = testExitCode;
+  }
 }

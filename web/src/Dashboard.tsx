@@ -170,6 +170,40 @@ export function Dashboard({
         {error && <Notice kind="error">{error}</Notice>}
         {notice && <Notice kind="success">{notice}</Notice>}
         <ResearchStatus dinner={d} />
+        {owner && canParticipate && !cancelled && d.organizerQuestion && (
+          <section
+            className="card form-card"
+            aria-label="A question for the organizer"
+          >
+            <span className="eyebrow">A question for you</span>
+            <h2>{d.organizerQuestion.message}</h2>
+            <div className="plan-actions">
+              {d.organizerQuestion.actions.map((action) => (
+                <Button
+                  key={action}
+                  busy={busy}
+                  onClick={() => {
+                    if (action === "edit_details") onSettings();
+                    else if (action === "edit_answers") onEdit();
+                    else if (action === "reservation")
+                      void onAction("reviewReservation", {
+                        version: d.activeVersion,
+                      });
+                    else void onAction("research");
+                  }}
+                >
+                  {action === "edit_details"
+                    ? "Edit dinner details"
+                    : action === "edit_answers"
+                      ? "Edit my answers"
+                      : action === "reservation"
+                        ? "Review booking"
+                        : "Try research again"}
+                </Button>
+              ))}
+            </div>
+          </section>
+        )}
         {cancelled ? (
           <section className="card form-card">
             <span className="status-badge">Cancelled</span>
@@ -384,11 +418,11 @@ export function Dashboard({
                   <h2>
                     {d.status === "agreed"
                       ? "Your dinner"
-                      : "A table worth gathering around"}
+                      : "We found these options"}
                   </h2>
                   <span className="version-label">Plan {d.activeVersion}</span>
                 </div>
-                {d.options.slice(0, 2).map((option, index) => (
+                {d.options.slice(0, 3).map((option, index) => (
                   <article
                     key={`${d.activeVersion}-${option.index}`}
                     className={`card plan-card ${index === 0 ? "recommended" : ""}`}
@@ -421,15 +455,46 @@ export function Dashboard({
                         <span className="price-symbol" aria-hidden="true">
                           $
                         </span>
-                        About{" "}
-                        {new Intl.NumberFormat(undefined, {
-                          style: "currency",
-                          currency: option.currency,
-                          maximumFractionDigits: 2,
-                        }).format(option.pricePerPerson)}{" "}
-                        per person
+                        {option.priceEstimateKnown === false ? (
+                          "Meal cost not confirmed"
+                        ) : (
+                          <>
+                            About{" "}
+                            {new Intl.NumberFormat(undefined, {
+                              style: "currency",
+                              currency: option.currency,
+                              maximumFractionDigits: 2,
+                            }).format(option.pricePerPerson)}{" "}
+                            per person
+                          </>
+                        )}
                       </p>
                     </div>
+                    {option.directory && (
+                      <div className="plan-actions">
+                        <a
+                          href={option.directory.profileUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          View on Yelp
+                        </a>
+                        {option.directory.menuUrl && (
+                          <a
+                            href={option.directory.menuUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Menu
+                          </a>
+                        )}
+                        {option.directory.priceLevel && (
+                          <span className="field-hint">
+                            {option.directory.priceLevel} · relative price level
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="reservation-note">
                       Reservation:{" "}
                       {option.reservationState === "booked"
@@ -471,32 +536,37 @@ export function Dashboard({
                       </details>
                     )}
                     {option.ownChecks && (
-                      <div className={`own-checks ${option.ownChecks.status}`}>
+                      <details
+                        className={`own-checks ${option.ownChecks.status}`}
+                      >
+                        <summary>Details to check</summary>
                         <div>
-                          <Icon
-                            name={
-                              option.ownChecks.status === "feasible"
-                                ? "check"
-                                : "clock"
-                            }
-                            size={16}
-                          />
-                          <strong>
-                            {option.ownChecks.status === "feasible"
-                              ? "Fits your answers"
-                              : option.ownChecks.status === "unresolved"
-                                ? "Restaurant details to confirm"
-                                : "A requirement needs attention"}
-                          </strong>
+                          <div>
+                            <Icon
+                              name={
+                                option.ownChecks.status === "feasible"
+                                  ? "check"
+                                  : "clock"
+                              }
+                              size={16}
+                            />
+                            <strong>
+                              {option.ownChecks.status === "feasible"
+                                ? "Fits your answers"
+                                : option.ownChecks.status === "unresolved"
+                                  ? "Restaurant details to confirm"
+                                  : "A requirement needs attention"}
+                            </strong>
+                          </div>
+                          {option.ownChecks.reasons.length > 0 && (
+                            <ul>
+                              {option.ownChecks.reasons.map((item, i) => (
+                                <li key={i}>{planCheckMessage(item)}</li>
+                              ))}
+                            </ul>
+                          )}
                         </div>
-                        {option.ownChecks.reasons.length > 0 && (
-                          <ul>
-                            {option.ownChecks.reasons.map((item, i) => (
-                              <li key={i}>{planCheckMessage(item)}</li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
+                      </details>
                     )}
                     {!d.agreement &&
                       canParticipate &&
@@ -606,7 +676,7 @@ export function Dashboard({
                       ? "See the latest research status above. Your group's saved answers are preserved."
                       : complete < expected
                         ? "Once everyone has joined and answered, Muse can check times and research places."
-                        : "Muse will look for places that fit the whole group and bring back up to two plans."}
+                        : "Muse will look for places that fit the whole group and bring back up to three options."}
                   </p>
                   <Button
                     busy={busy}

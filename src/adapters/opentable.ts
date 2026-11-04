@@ -35,7 +35,11 @@ export interface ReservationProvider {
     requestId: string,
     authorize?: () => Promise<boolean>,
   ): Promise<BookingResult>;
-  lookup(restaurantId: string, reference: string): Promise<BookingResult>;
+  lookup(
+    restaurantId: string,
+    reference: string,
+    slot?: ReservationSlot,
+  ): Promise<BookingResult>;
 }
 export interface OpenTableOptions {
   enabled?: boolean;

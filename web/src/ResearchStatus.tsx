@@ -46,9 +46,13 @@ const titles = {
   superseded: "Earlier research was superseded",
   cancelled: "Research cancelled",
 };
-const stages = {
+const stages: Record<string, string> = {
   queued: "Waiting to start",
-  provider: "Muse connection",
+  provider: "Researching restaurant details",
+  directory_discovery: "Finding restaurants on Yelp",
+  restaurant_details: "Checking restaurant details",
+  group_fit: "Matching the group’s answers",
+  booking_availability: "Checking booking availability",
   output_validation: "Checking the research response",
   source_verification: "Verifying sources",
   planning: "Checking possible plans",
@@ -81,8 +85,21 @@ export function ResearchStatus({ dinner }: { dinner: DinnerView }) {
       <p className="muted small">
         {attempt.status === "needs_checks" && dinner.options.length
           ? "You can choose an option and confirm if it works for you. Confirm any food or allergy accommodation with the restaurant before relying on it. A table is not reserved until the reservation is confirmed."
-          : attempt.message}
+          : attempt.status === "queued" || attempt.status === "running"
+            ? "We’re finding restaurants and checking the group’s dinner details. This page will update as we go."
+            : attempt.status === "failed"
+              ? "The organizer is reviewing the next step. Your saved answers are unchanged."
+              : attempt.status === "cancelled"
+                ? "Research has stopped. Your saved answers are unchanged."
+                : attempt.status === "superseded"
+                  ? "The group’s answers changed. The latest dinner details will be used for the next search."
+                  : "The latest research is ready to review."}
       </p>
+      {(attempt.status === "queued" || attempt.status === "running") && (
+        <p className="field-hint" role="status">
+          {stages[details?.stage ?? "queued"] ?? "Checking dinner details"}
+        </p>
+      )}
       {details && (
         <details className="research-diagnostics">
           <summary>Research details for organizer</summary>
@@ -97,7 +114,7 @@ export function ResearchStatus({ dinner }: { dinner: DinnerView }) {
             <dl className="answers-list">
               <div>
                 <dt>Stage</dt>
-                <dd>{stages[details.stage]}</dd>
+                <dd>{stages[details.stage] ?? "Checking dinner details"}</dd>
               </div>
               {details.code && (
                 <div>

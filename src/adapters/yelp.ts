@@ -1,4 +1,4 @@
-/** Yelp Places discovery only. Never persist this content; only business IDs may be durable. */
+/** Yelp Places discovery only. Cache content for at most 23 hours; only business IDs may be durable. */
 import { z } from "zod";
 
 export interface YelpBusiness {
@@ -8,6 +8,8 @@ export interface YelpBusiness {
   address: string;
   city: string;
   phone?: string;
+  menuUrl?: string;
+  isClosed?: boolean;
   /** Yelp's relative $–$$$$ tier, never a per-person amount. */
   priceLevel?: string;
   categories: { alias: string; title: string }[];
@@ -66,6 +68,7 @@ const hoursSchema = z
 const businessSchema = z.object({
   id: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
   name: text.min(1),
+  is_closed: z.boolean().optional(),
   url: z
     .url()
     .max(3000)
@@ -89,6 +92,18 @@ const businessSchema = z.object({
     display_address: z.array(text).max(10).optional(),
   }),
   phone: text.optional(),
+  attributes: z
+    .object({
+      menu_url: z
+        .url()
+        .max(3000)
+        .refine((value) => {
+          const url = new URL(value);
+          return url.protocol === "https:" && !url.username && !url.password;
+        })
+        .nullish(),
+    })
+    .optional(),
   price: z
     .string()
     .regex(/^\${1,4}$/)
@@ -146,7 +161,7 @@ export class YelpClient {
       location: area ? `${area}, ${city}` : city,
       term: term || "restaurants",
       categories: "restaurants",
-      limit: "5",
+      limit: "10",
     });
     return this.load(`/businesses/search?${query}`, true);
   }
@@ -202,7 +217,7 @@ export class YelpClient {
         : undefined;
       if (search && !list?.success) throw new YelpError("invalid_response");
       const records =
-        search && list?.success ? list.data.businesses.slice(0, 5) : [data];
+        search && list?.success ? list.data.businesses.slice(0, 10) : [data];
       const retrieved = this.now();
       const expires = retrieved + this.ttl;
       const value = records.map((record): YelpBusiness => {
@@ -215,6 +230,7 @@ export class YelpClient {
         return {
           id: b.id,
           name: b.name,
+          isClosed: b.is_closed,
           url: b.url,
           address:
             b.location.display_address?.join(", ") ||
@@ -230,6 +246,7 @@ export class YelpClient {
               .join(", "),
           city: b.location.city ?? "",
           phone: b.phone || undefined,
+          menuUrl: b.attributes?.menu_url ?? undefined,
           priceLevel: b.price,
           categories: b.categories,
           hours: regular?.open.map((h) => ({

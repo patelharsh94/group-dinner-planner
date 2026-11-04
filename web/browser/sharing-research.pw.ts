@@ -198,7 +198,7 @@ test("synthetic research: 401 authentication guidance is organizer-only, members
   await expect(
     page.getByText("Research details for organizer", { exact: true }),
   ).toHaveCount(0);
-  await expect(card).toContainText(research.message);
+  await expect(card).toContainText("The organizer is reviewing the next step");
   await expect(card).not.toContainText("MODEL_API_KEY");
   await expect(card).not.toContainText("AUTH_INVALID");
 });
