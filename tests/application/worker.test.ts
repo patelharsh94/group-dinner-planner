@@ -466,3 +466,29 @@ it('LINK03 commits sibling links despite revision changes, suppresses changed ve
   await worker.runJob(stale);
   expect(store.markSuppressed).toHaveBeenCalled();
 });
+
+it("BRIEF-01 enriches the selected restaurant without resetting confirmations or option versions", async () => {
+  const state = bookingState();
+  for (const venue of state.dinner.venues) delete venue.directoryBusinessId;
+  state.dinner.confirmations = { "1001": state.dinner.activeVersion! };
+  const version = state.dinner.activeVersion;
+  const selected = state.dinner.proposals.at(-1)!.options[0]!;
+  const venue = structuredClone(state.dinner.venues.find(v => v.id === selected.venueId)!);
+  venue.brief = {
+    version:1,retrievedAt:now,sources:[],
+    address:{status:"complete",text:venue.address,sourceUrls:[]},
+    hours:{status:"partial",postedHours:[{day:"Tuesday",hours:"5–10pm"}],sourceUrls:[]},
+    booking:{status:"unknown",sourceUrls:[]},dietary:{status:"unknown",assessments:[],sourceUrls:[]},
+  };
+  let record:any={id:"d1",organizerId:"1001",revision:1,state};
+  const tx:any={getDinner:async()=>record,getResearchAttempt:async()=>null,createResearchAttempt:async(input:any)=>({...input,status:"queued",stage:"queued",updatedAt:now}),updateResearchAttempt:vi.fn()};
+  const store:any={transaction:async(fn:any)=>fn(tx),readDinner:async()=>structuredClone(record),processWork:async(_id:any,_worker:any,fn:any)=>fn(tx)};
+  const coordinator=new Coordinator({MODEL_API_KEY:"fixture"} as any,undefined,()=>now);
+  coordinator.save=async(_tx:any,_before:any,next:any)=>{record={...record,state:next,revision:2};return record;};
+  const muse:any={research:async()=>({venues:[venue],options:[selected],gaps:[],focusedSite:true})};
+  const worker=new Worker(store,coordinator,{} as any,muse);
+  await worker.runJob({id:"brief",kind:"research",attempts:1,payload:{dinnerId:"d1",userId:"1001",revision:1,verificationOnly:true,version}} as any);
+  expect(record.state.dinner.venues.find((v:any)=>v.id===venue.id).brief.hours.postedHours[0].hours).toBe("5–10pm");
+  expect(record.state.dinner.activeVersion).toBe(version);
+  expect(record.state.dinner.confirmations).toEqual({"1001":version});
+});

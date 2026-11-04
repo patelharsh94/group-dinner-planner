@@ -435,6 +435,7 @@ export class Worker {
         await this.researchProgress(work, record, {
           stage: "planning",
           ...(result.phases ? {phases: result.phases} : {}),
+          ...(result.providerCalls ? {providerCalls: result.providerCalls} : {}),
           ...(result.discovery ? { discovery: result.discovery } : {}),
           ...(result.verification?.issues
             ? { verificationIssues: result.verification.issues }
@@ -498,6 +499,7 @@ export class Worker {
                     );
                 }
               if (checked && oldVenue) {
+                if (checked.brief) oldVenue.brief = checked.brief;
                 if (checked.bookingLink) oldVenue.bookingLink = checked.bookingLink;
                 if (checked.officialWebsiteUrl)
                   oldVenue.officialWebsiteUrl = checked.officialWebsiteUrl;

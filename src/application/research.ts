@@ -53,6 +53,22 @@ export const ResearchPhaseOutcomeSchema = z.object({
   model: z.string().max(100).regex(/^[A-Za-z0-9_.:/-]+$/).optional(),
 }).strict();
 export type ResearchPhaseOutcome = z.infer<typeof ResearchPhaseOutcomeSchema>;
+export const ProviderCallDiagnosticSchema = z.object({
+  phase: z.enum(["research", "normalization", "repair"]),
+  status: z.enum(["completed", "incomplete", "failed"]),
+  durationMs: z.number().int().nonnegative(),
+  model: z.string().max(100).regex(/^[A-Za-z0-9_.:/-]+$/),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high"]),
+  maxOutputTokens: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  reasoningTokens: z.number().int().nonnegative().optional(),
+  incompleteReason: z.enum(["max_output_tokens", "content_filter", "unknown"]).optional(),
+  queryCount: z.number().int().nonnegative(),
+  schemaIssueCount: z.number().int().nonnegative(),
+  failureKind: z.enum(["output_budget", "timeout", "json", "schema", "refusal", "conflict", "absent", "provider"]).optional(),
+  schemaIssues: z.array(z.object({ path: z.string().max(200).regex(/^[A-Za-z0-9_.\[\]-]*$/), code: z.string().max(80).regex(/^[A-Za-z0-9_-]+$/) }).strict()).max(20).optional(),
+}).strict();
 export const ResearchAttemptSchema = z
   .object({
     id: z.string().min(1).max(128),
@@ -84,6 +100,7 @@ export const ResearchAttemptSchema = z
     durationMs: z.number().int().nonnegative().optional(),
     verificationIssues: z.array(VerificationIssueSchema).max(7).optional(),
     phases: z.array(ResearchPhaseOutcomeSchema).max(10).optional(),
+    providerCalls: z.array(ProviderCallDiagnosticSchema).max(6).optional(),
     discovery: z
       .object({
         provider: z.literal("yelp"),
@@ -202,6 +219,7 @@ export class ResearchFailure extends Error {
       httpStatus?: number;
       providerRequestId?: string;
       retryAfterSeconds?: number;
+      providerCalls?: z.infer<typeof ProviderCallDiagnosticSchema>[];
     } = {},
   ) {
     super(researchGuidance(code));

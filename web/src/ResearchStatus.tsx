@@ -191,6 +191,7 @@ export function ResearchStatus({ dinner }: { dinner: DinnerView }) {
                 </div>
               ) : null}
               {details.phases?.length ? <div><dt>Research phases</dt><dd><ul>{details.phases.map((phase, i) => <li key={i}>{phase.phase.replaceAll("_", " ")}: {phase.outcome}{phase.code ? ` (${phase.code.replaceAll("_", " ")})` : ""}{phase.durationMs !== undefined ? ` · ${(phase.durationMs / 1000).toFixed(1)}s` : ""}{phase.model ? ` · ${phase.model}` : ""}</li>)}</ul></dd></div> : null}
+              {details.providerCalls?.length ? <div><dt>Provider calls</dt><dd><ul>{details.providerCalls.map((call, i) => <li key={i}>{call.phase}: {call.status} · {(call.durationMs / 1000).toFixed(1)}s · {call.model} · reasoning {call.reasoningEffort}{call.incompleteReason ? ` · ${call.incompleteReason}` : ""}{call.failureKind ? ` · ${call.failureKind}` : ""}{call.schemaIssues?.length ? ` · ${call.schemaIssues.map(issue => `${issue.path || "root"}: ${issue.code}`).join(", ")}` : ""}{call.inputTokens !== undefined ? ` · ${call.inputTokens} input tokens` : ""}{call.outputTokens !== undefined ? ` · ${call.outputTokens} output tokens` : ""}{call.reasoningTokens !== undefined ? ` · ${call.reasoningTokens} reasoning tokens` : ""} · {call.queryCount} searches · {call.schemaIssueCount} schema issues</li>)}</ul></dd></div> : null}
               {details.counts && (
                 <div>
                   <dt>Research checks</dt>

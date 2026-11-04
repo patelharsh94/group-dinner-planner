@@ -1,7 +1,7 @@
 import type { coordinationView } from "../application/coordination.js";
 import type { ReservationProjection } from "../application/reservations.js";
 import type { ResearchPhaseOutcome, ResearchAttempt } from "../application/research.js";
-import type { BookingLink, Constraints, DinnerSetup, Interval } from "../domain/index.js";
+import type { BookingLink, Constraints, DinnerSetup, Interval, RestaurantBrief } from "../domain/index.js";
 export type PreferencesInput = Pick<
   Constraints,
   "availability" | "dietary" | "preferences" | "budget" | "travel"
@@ -194,6 +194,7 @@ export interface DinnerView extends DinnerSummary {
     index: number;
     venueId: string;
     venueName: string;
+    brief?: RestaurantBrief;
     address: string;
     start: string;
     end: string;

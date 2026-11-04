@@ -1,3 +1,4 @@
+import { researchSelectedRestaurant, type ProviderCallTelemetry } from "./selected-research.js";
 import {
   associatedVenuePage,
   officialBookingLink,
@@ -64,6 +65,7 @@ export const ResearchSchema = z
   .strict();
 export type ResearchResult = z.infer<typeof ResearchSchema> & {
   focusedSite?: boolean;
+  providerCalls?: ProviderCallTelemetry[];
   phases?: ResearchAttempt["phases"];
   discovery?: ResearchAttempt["discovery"];
   verification?: {
@@ -788,6 +790,7 @@ export class MuseClient {
     now: string,
     onStage?: (stage: ResearchStage) => Promise<void>,
   ): Promise<ResearchResult> {
+    if (context.targetVenue) return researchSelectedRestaurant({ ...this.config, fetcher: this.fetcher }, context, now, onStage);
     const deadline = Date.now() + 75000;
     const phases: NonNullable<ResearchAttempt["phases"]> = [];
     let discovery: ResearchAttempt["discovery"];
@@ -848,97 +851,6 @@ export class MuseClient {
     }
     let selectedPages: Map<string, string> | undefined;
     let officialWebsiteUrl: string | undefined;
-    if (context.targetVenue) {
-      officialWebsiteUrl = context.targetVenue.websiteUrl;
-      if (!officialWebsiteUrl) {
-        try {
-          const resolved = await bounded(
-            this.response(
-              z.object({ websiteUrl: PublicUrlSchema.nullable() }).strict(),
-              {
-                name: context.targetVenue.name,
-                address: context.targetVenue.address,
-                city: context.setup.city,
-              },
-              "Use one focused web search only to identify the official restaurant website URL matching this exact name, street address and city. Return its URL from actual search results, or null if uncertain. Do not research prices, dietary suitability, travel, hours, reservations or alternatives. Do not guess a website URL or return directories, social networks or review sites.",
-              true,
-              20000,
-              400,
-            ),
-            20000,
-          );
-          const url = resolved.result.websiteUrl;
-          if (
-            url &&
-            resolved.searchUrls.has(canonicalEvidenceUrl(url)) &&
-            isRestaurantSiteUrl(url)
-          )
-            officialWebsiteUrl = url;
-        } catch (error) {
-          // A failed identity lookup cannot trigger whole-web feasibility retries.
-          // Authentication, access and quota errors retain their typed user-facing failure.
-          if (
-            error instanceof ResearchFailure &&
-            [
-              "AUTH_INVALID",
-              "ACCESS_DENIED",
-              "QUOTA_EXCEEDED",
-              "RATE_LIMITED",
-            ].includes(error.code)
-          )
-            throw error;
-        }
-      }
-      const retrievalStarted = Date.now();
-      selectedPages = officialWebsiteUrl
-        ? await readVenueSite(
-            officialWebsiteUrl,
-            this.config.sourceReader
-              ? (url) => this.config.sourceReader!(url)
-              : readPublicSource,
-            context.targetVenue.menuUrl,
-          )
-        : new Map();
-      const retrievalFailed =
-        selectedPages instanceof VenueSitePages && selectedPages.failures > 0;
-      phases.push({
-        phase: "retrieval",
-        outcome: selectedPages.size
-          ? retrievalFailed
-            ? "partial"
-            : "complete"
-          : "unavailable",
-        ...(selectedPages.size && !retrievalFailed
-          ? {}
-          : {
-              code:
-                selectedPages instanceof VenueSitePages &&
-                selectedPages.timedOut
-                  ? ("timeout" as const)
-                  : ("source_unavailable" as const),
-            }),
-        updatedAt: now,
-        durationMs: Date.now() - retrievalStarted,
-      });
-      if (!selectedPages.size) {
-        await onStage?.("source_verification");
-        return {
-          venues: [],
-          options: [],
-          focusedSite: true,
-          phases,
-          gaps: [
-            "The restaurant's official website could not be verified. Provide its official website or menu link to check details.",
-          ],
-          verification: {
-            verifiedClaims: 0,
-            unresolvedClaims: 1,
-            sourcesFailed: 1,
-            issues: [{ code: "source_unavailable", count: 1 }],
-          },
-        };
-      }
-    }
     const { result, citations, searchEvidence } = selectedPages
       ? {
           result: await (async () => {

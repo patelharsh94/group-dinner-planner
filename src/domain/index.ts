@@ -192,7 +192,25 @@ export const BookingLinkSchema = z.object({
   provenance: z.enum(["official_link", "matched_provider"]),
 }).strict();
 export type BookingLink = z.infer<typeof BookingLinkSchema>;
+// Informational research is deliberately separate from evidence used by feasibility gates.
+const briefCategory = {
+  status: z.enum(["complete", "partial", "unknown", "conflicting"]),
+  sourceUrls: z.array(PublicUrlSchema).max(20).default([]),
+};
+export const PublicDietaryCategorySchema = z.enum(["vegetarian", "vegan", "gluten-free", "dairy-free", "nut-free", "peanut-free", "shellfish-free", "fish-free", "egg-free", "soy-free", "sesame-free", "halal", "kosher", "pescatarian"]);
+export const RestaurantBriefSchema = z.object({
+  version: z.literal(1),
+  retrievedAt: iso,
+  sources: z.array(z.object({ url: PublicUrlSchema, label: z.string().min(1).max(200), retrievedAt: iso }).strict()).max(30),
+  address: z.object({ ...briefCategory, text: z.string().min(1).max(1000).optional() }).strict(),
+  hours: z.object({ ...briefCategory, postedHours: z.array(z.object({ day: z.string().min(1).max(80), hours: z.string().min(1).max(300) }).strict()).max(14).default([]), dateSpecificUncertainty: z.string().max(1000).optional() }).strict(),
+  booking: z.object({ ...briefCategory, destinationUrl: PublicUrlSchema.optional(), phone: z.string().max(40).optional() }).strict(),
+  dietary: z.object({ ...briefCategory, assessments: z.array(z.object({ requirement: PublicDietaryCategorySchema, assessment: z.enum(["explicit", "promising", "unsuitable", "unknown"]), dishes: z.array(z.string().max(200)).max(20).default([]), caveats: z.array(z.string().max(1000)).max(10).default([]), sourceUrls: z.array(PublicUrlSchema).max(20).default([]) }).strict()).max(32).default([]) }).strict(),
+  sourcedSummary: z.object({ text: z.string().min(1).max(6000), sourceUrls: z.array(PublicUrlSchema).min(1).max(20) }).strict().optional(),
+}).strict();
+export type RestaurantBrief = z.infer<typeof RestaurantBriefSchema>;
 export const VenueSchema = z.object({
+  brief: RestaurantBriefSchema.optional(),
   bookingLink: BookingLinkSchema.optional(),
   officialWebsiteUrl: PublicUrlSchema.optional(),
   directoryBusinessId: z

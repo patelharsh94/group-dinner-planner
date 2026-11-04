@@ -21,6 +21,7 @@ import {
   parseLocalDateTime,
   removeDietary,
   removeFirmLimit,
+  RestaurantBriefSchema,
   type DinnerSetup,
   type Venue,
 } from "../../src/domain/index.js";
@@ -117,6 +118,16 @@ const venue: Venue = {
   },
 };
 describe("dinner aggregate requirements", () => {
+  it("keeps informational dietary assessments separate from firm and allergy gates", () => {
+    let d = ready();
+    d = updateConstraints(d, "a", {dietary: [{requirement:"vegetarian",strength:"firm",allergy:true}]}, now);
+    d = setVenues(d, "a", [venue], now);
+    const before = evaluateFeasibility(d, option, now);
+    d.venues[0]!.brief = RestaurantBriefSchema.parse({version:1,retrievedAt:now,sources:[],address:{status:"complete",text:"1 Main St"},hours:{status:"complete",postedHours:[{day:"Tuesday",hours:"All evening"}]},booking:{status:"complete",destinationUrl:"https://venue.example/book"},dietary:{status:"complete",assessments:[{requirement:"vegetarian",assessment:"explicit",dishes:["Vegetable curry"],caveats:[]}]}});
+    expect(evaluateFeasibility(d, option, now)).toEqual(before);
+    expect(before.status).not.toBe("feasible");
+    expect(DinnerSchema.parse(d).venues[0]!.brief?.version).toBe(1);
+  });
   it("cancels only by organizer before start, preserving history and remaining terminal", () => {
     let agreed = proposeOptions(
       { ...ready(), venues: [venue] },

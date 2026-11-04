@@ -1,4 +1,5 @@
 import { BookingActions } from "./BookingActions";
+import { RestaurantDetails } from "./RestaurantDetails";
 import { planCheckMessage } from "./plan-checks";
 import { GroupChoice, VerificationStatus } from "./GroupChoice";
 import { ReservationPanel } from "./ReservationPanel";
@@ -471,6 +472,7 @@ export function Dashboard({
                     </div>
                     <h3>{option.venueName}</h3>
                     <p className="muted small">{option.address}</p>
+                    {option.brief && <RestaurantDetails brief={option.brief} />}
                     <div className="plan-facts">
                       <p>
                         <Icon name="calendar" size={17} />

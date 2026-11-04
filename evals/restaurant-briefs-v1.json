@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "description": "Public restaurant release corpus, no participant data; unavailable facts may remain explicitly unknown. Sources are website seeds, never ground truth for hours or diet.",
+  "cases": [
+    {
+      "name": "Gaijin",
+      "address": "950 W Lake St",
+      "websiteUrl": "https://gaijinchicago.com/",
+      "city": "Chicago"
+    },
+    {
+      "name": "Momotaro",
+      "address": "820 W Lake St",
+      "websiteUrl": "https://www.momotarochicago.com/",
+      "city": "Chicago"
+    },
+    {
+      "name": "Giant",
+      "address": "3209 W Armitage Ave",
+      "websiteUrl": "https://www.giantrestaurant.com/",
+      "city": "Chicago"
+    },
+    {
+      "name": "Monteverde",
+      "address": "1020 W Madison St",
+      "websiteUrl": "https://monteverdechicago.com/",
+      "city": "Chicago"
+    },
+    {
+      "name": "Girl & the Goat",
+      "address": "809 W Randolph St",
+      "websiteUrl": "https://www.girlandthegoat.com/chicago",
+      "city": "Chicago"
+    },
+    {
+      "name": "Lula Cafe",
+      "address": "2537 N Kedzie Blvd",
+      "websiteUrl": "https://www.lulacafe.com/",
+      "city": "Chicago"
+    },
+    {
+      "name": "Rose Mary",
+      "address": "932 W Fulton Market",
+      "websiteUrl": "https://www.rosemarychicago.com/",
+      "city": "Chicago"
+    },
+    {
+      "name": "avec West Loop",
+      "address": "615 W Randolph St",
+      "websiteUrl": "https://www.avecrestaurant.com/location/avec-west-loop/",
+      "city": "Chicago"
+    },
+    {
+      "name": "Ema - River North",
+      "address": "74 W Illinois St",
+      "websiteUrl": "https://www.emarestaurants.com/chicago",
+      "city": "Chicago"
+    },
+    {
+      "name": "Au Cheval",
+      "address": "800 W Randolph St",
+      "websiteUrl": "https://www.auchevaldiner.com/chicago",
+      "city": "Chicago"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import {
   displayDirectoryDinner,
 } from "../application/directory-display.js";
 import { researchVersion } from "../application/research-version.js";
+import { publicRestaurantBrief } from "../application/public-restaurant-brief.js";
 import { coordinationView } from "../application/coordination.js";
 import { getReservation } from "../application/reservations.js";
 import { researchMessage } from "../application/research.js";
@@ -514,6 +515,7 @@ export async function project(
             d.venues.find((v) => v.id === option.venueId) ??
             proposal!.venues.find((v) => v.id === option.venueId);
           const feasibility = evaluateFeasibility(d, option, now);
+          const brief = venue?.brief ? publicRestaurantBrief(venue.brief, s) : undefined;
           const reasons = feasibility.reasons
             .filter(
               (reason) =>
@@ -523,6 +525,7 @@ export async function project(
           return {
             index,
             venueId: option.venueId,
+            ...(brief ? { brief } : {}),
             venueName:
               displayDinner.venues.find((v) => v.id === option.venueId)?.name ??
               venue?.name ??
