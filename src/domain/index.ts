@@ -184,7 +184,16 @@ const evidenceBase = {
     .optional(),
 };
 export const ClaimSchema = z.object(evidenceBase);
+export const BookingLinkSchema = z.object({
+  url: PublicUrlSchema,
+  sourceUrl: PublicUrlSchema,
+  retrievedAt: iso,
+  provider: z.string().min(1).max(80),
+  provenance: z.enum(["official_link", "matched_provider"]),
+}).strict();
+export type BookingLink = z.infer<typeof BookingLinkSchema>;
 export const VenueSchema = z.object({
+  bookingLink: BookingLinkSchema.optional(),
   officialWebsiteUrl: PublicUrlSchema.optional(),
   directoryBusinessId: z
     .string()

@@ -27,6 +27,7 @@ export interface ReservationReview {
   status: "checking" | "ready" | "handoff_required" | "action_needed";
   message: string;
   bookingUrl?: string;
+  linkKind?: "reserve" | "website" | "listing";
   phone?: string;
   searchUrl?: string;
   provider?: string;
@@ -94,15 +95,15 @@ function fallback(record: DinnerRecord<AppDinner>) {
     proposal = record.state.dinner.proposals.find(
       (p) => p.version === record.state.dinner.activeVersion,
     ),
-    venue = proposal?.venues.find((v) => v.id === option?.venueId);
+    venue = record.state.dinner.venues.find((v) => v.id === option?.venueId) ?? proposal?.venues.find((v) => v.id === option?.venueId);
   const evidence =
     record.state.dinner.venues.find((v) => v.id === option?.venueId)?.evidence
       .reservation ?? venue?.evidence.reservation;
   const known = evidence?.status === "known";
   // Only independently verified evidence is allowed; arbitrary model reservation URLs never become booking links.
   const bookingUrl =
-    known && PublicUrlSchema.safeParse(evidence.url).success
-      ? evidence.url
+    venue?.bookingLink && PublicUrlSchema.safeParse(venue.bookingLink.url).success
+      ? venue.bookingLink.url
       : undefined;
   const phone =
     known && (evidence as typeof evidence & { phone?: string })?.phone;
@@ -172,7 +173,7 @@ export class ReservationService {
             : phone
               ? "Call the verified restaurant number, request the confirmed time and party size, then report the result."
               : "Muse could not verify a booking page or phone number. Use Find restaurant contact below, then ask the restaurant to confirm your selected date, time, party size and any outstanding requirements.",
-      ...(bookingUrl ? { bookingUrl } : {}),
+      ...(bookingUrl ? { bookingUrl, linkKind: "reserve" as const } : venue?.officialWebsiteUrl ? {bookingUrl: venue.officialWebsiteUrl, linkKind:"website" as const} : {}),
       ...(phone ? { phone } : {}),
       ...(!bookingUrl && !phone && venue
         ? {

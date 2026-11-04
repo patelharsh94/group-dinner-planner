@@ -19,11 +19,12 @@ import {
   researchRetryable,
   type ResearchAttempt,
 } from "./research.js";
-import { researchVersion } from "./research-version.js";
+import { bookingResearchVersion, researchVersion } from "./research-version.js";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
 import { z } from "zod";
 import {
+  BookingLinkSchema,
   evaluateFeasibility,
   proposeOptions,
   reminderEligibility,
@@ -68,6 +69,8 @@ const JobSchema = z.object({
     .max(10)
     .optional(),
   attemptId: z.string().optional(),
+  venueId: z.string().optional(),
+  websiteHint: z.string().optional(),
 });
 export class Worker {
   private workerId = randomUUID();
@@ -136,6 +139,12 @@ export class Worker {
           )
           .finally(() => this.activeJobs.delete(kind));
       }
+    }
+    for (let slot = 0; slot < 2; slot++) {
+      const work = await this.store.claimBookingEnrichment(this.workerId);
+      if (!work) break;
+      this.activeJobs.add(work.id);
+      void this.runJob(work).catch(() => {}).finally(() => this.activeJobs.delete(work.id));
     }
     for (let i = 0; i < 10; i++) {
       await this.drainInbox();
@@ -312,8 +321,9 @@ export class Worker {
           "directory_rank",
           "directory_refresh",
           "web_discovery",
+          "booking_enrichment",
         ].includes(work.kind ?? "") &&
-        job.researchVersion === researchVersion(record.state)
+        job.researchVersion === (work.kind === "booking_enrichment" ? bookingResearchVersion(record.state) : researchVersion(record.state))
       )
     ) {
       await this.stale(work, job.userId, record.id);
@@ -321,6 +331,10 @@ export class Worker {
     }
     const startedMs = Date.now();
     try {
+      if (work.kind === "booking_enrichment") {
+        await this.enrichBooking(work, record, job);
+        return;
+      }
       if (work.kind === "web_discovery") {
         await this.discoverWeb(work, record, job);
         return;
@@ -420,6 +434,7 @@ export class Worker {
         );
         await this.researchProgress(work, record, {
           stage: "planning",
+          ...(result.phases ? {phases: result.phases} : {}),
           ...(result.discovery ? { discovery: result.discovery } : {}),
           ...(result.verification?.issues
             ? { verificationIssues: result.verification.issues }
@@ -483,6 +498,7 @@ export class Worker {
                     );
                 }
               if (checked && oldVenue) {
+                if (checked.bookingLink) oldVenue.bookingLink = checked.bookingLink;
                 if (checked.officialWebsiteUrl)
                   oldVenue.officialWebsiteUrl = checked.officialWebsiteUrl;
                 for (const key of ["dietary", "travel"] as const) {
@@ -816,6 +832,32 @@ export class Worker {
       });
     }
   }
+  private async enrichBooking(work: ClaimedWork, record: DinnerRecord<AppDinner>, job: z.infer<typeof JobSchema>): Promise<void> {
+    const d = record.state.dinner;
+    const proposal = d.proposals.find(p => p.version === job.version);
+    const venue = d.venues.find(v => v.id === job.venueId);
+    if (!venue || d.activeVersion !== job.version || !proposal?.options.some(o => o.venueId === venue.id) || (venue.officialWebsiteUrl ?? "") !== job.websiteHint || !canPlan(record.state)) {
+      await this.store.markSuppressed(work.id, this.workerId); return;
+    }
+    let result: {bookingLink?: import("../domain/index.js").BookingLink; outcome: "complete"|"partial"|"unavailable"; code?: "timeout"|"invalid_response"|"source_unavailable"|"absent"|"identity_unmatched"} = {outcome:"unavailable",code:"absent"};
+    try {
+      const cached = venue.directoryBusinessId ? (await getDirectoryBusinesses(this.store.pool, [venue.directoryBusinessId], this.coordinator.now()))[0] : undefined;
+      const target = {...venue, ...(cached ? {name:cached.name,address:cached.address} : {})};
+      if (this.muse?.enrichBookingLink) result = await bounded(this.muse.enrichBookingLink(target, this.coordinator.now()), 35000);
+      if (result.bookingLink && !BookingLinkSchema.safeParse(result.bookingLink).success) result = {outcome:"unavailable",code:"invalid_response"};
+    } catch (error) {
+      result = {outcome:"unavailable",code: error instanceof Error && ["TimeoutError","AbortError"].includes(error.name) ? "timeout" : "source_unavailable"};
+    }
+    await this.commitResult(work, record, job.userId, async (tx, current) => {
+      const s = structuredClone(current.state), active = s.dinner.proposals.find(p => p.version === s.dinner.activeVersion);
+      const currentVenue = s.dinner.venues.find(v => v.id === job.venueId);
+      if (s.dinner.activeVersion !== job.version || !currentVenue || (currentVenue.officialWebsiteUrl ?? "") !== job.websiteHint || !active?.options.some(o => o.venueId === currentVenue.id) || !canPlan(s)) return;
+      if (result.bookingLink) currentVenue.bookingLink = result.bookingLink;
+      s.bookingResearch ??= {};
+      s.bookingResearch[currentVenue.id] = {phase:"booking_link",outcome:result.outcome,...(result.code ? {code:result.code} : {}),updatedAt:this.coordinator.now(),version:job.version!,venueId:currentVenue.id};
+      await this.coordinator.save(tx, current, s);
+    });
+  }
   private async discoverAndPublish(
     work: ClaimedWork,
     record: DinnerRecord<AppDinner>,
@@ -1005,6 +1047,7 @@ export class Worker {
           attemptId: work.id,
         },
       );
+      await this.coordinator.scheduleBookingEnrichment(tx, next);
       if (!reuse) await this.coordinator.announce(tx, next.state, work.id);
     });
   }
@@ -1244,8 +1287,9 @@ export class Worker {
             "directory_rank",
             "directory_refresh",
             "web_discovery",
+          "booking_enrichment",
           ].includes(work.kind ?? "") &&
-          researchVersion(current.state) === researchVersion(record.state)
+          (work.kind === "booking_enrichment" ? bookingResearchVersion(current.state) === bookingResearchVersion(record.state) : researchVersion(current.state) === researchVersion(record.state))
         )
       ) {
         // A newer constraint save queues current research; stale provider results stay silent.

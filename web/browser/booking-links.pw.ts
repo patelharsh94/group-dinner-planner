@@ -1,0 +1,23 @@
+import { test, expect } from '@playwright/test';
+import { bootstrapFixture,dinnerFixture } from '../tests/fixtures';
+test('LINK01-02 three links before agreement and selected prominent after agreement, without creating a booking',async({page,context})=>{
+ await page.route('https://telegram.org/js/telegram-web-app.js',route=>route.fulfill({contentType:'text/javascript',body:''}));
+ await page.addInitScript(()=>{(window as any).Telegram={WebApp:{initData:'TEST-ONLY-booking',ready(){},expand(){},openLink(){},openTelegramLink(){},colorScheme:'light'}};});
+ const options=['One','Two','Three'].map((name,index)=>({index,venueId:`v${index}`,venueName:`Restaurant ${name}`,address:'Chicago',start:'2026-11-10T19:00:00-06:00',end:'2026-11-10T20:30:00-06:00',pricePerPerson:45,currency:'USD',reservationUrl:'',reservationState:'unknown',ownChecks:{status:'unresolved' as const,reasons:[]},sources:[],bookingLink:{url:`https://booking.example/${index}`,sourceUrl:`https://restaurant.example/${index}`,retrievedAt:'2026-11-03T19:00:00Z',provider:'Restaurant',provenance:'official_link' as const}}));
+ let dinner=dinnerFixture({status:'proposed',role:'member',activeVersion:1,options});
+ let mutations=0;
+ await page.route('**/api/miniapp/bootstrap*',route=>route.fulfill({json:bootstrapFixture({currentDinnerId:dinner.id,dinners:[dinner]})}));
+ await page.route('**/api/miniapp/dinners/test-dinner',route=>route.fulfill({json:dinner}));
+ await page.route('**/api/miniapp/actions',route=>{mutations++;return route.fulfill({status:500,json:{}});});
+ await context.route('https://booking.example/**',route=>route.fulfill({body:'Published restaurant booking page'}));
+ await page.goto('/app/');
+ const links=page.getByRole('link',{name:'Reserve · Restaurant',exact:true});
+ await expect(links).toHaveCount(3);
+ const popup=page.waitForEvent('popup');await links.first().click();await(await popup).close();
+ expect(mutations).toBe(0);
+ dinner={...dinner,status:'agreed',agreement:{version:1,confirmed:1,required:1,agreed:true}};
+ await page.reload();
+ const selected=page.getByRole('region',{name:'Group current choice'}).getByRole('link',{name:'Reserve · Restaurant'});
+ await expect(selected).toHaveClass(/button-primary/);
+ expect(mutations).toBe(0);
+});

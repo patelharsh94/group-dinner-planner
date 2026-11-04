@@ -901,6 +901,13 @@ export class MiniAppService {
             409,
             "Choose a restaurant first.",
           );
+        if (venue.officialWebsiteUrl !== value.url) {
+          delete venue.bookingLink;
+          if (s.bookingResearch) delete s.bookingResearch[venue.id];
+          // Snapshots may be used as a legacy fallback by older records.
+          const snapshot = active?.venues.find(v => v.id === venue.id);
+          if (snapshot) delete snapshot.bookingLink;
+        }
         venue.officialWebsiteUrl = value.url;
         changed = true;
         break;

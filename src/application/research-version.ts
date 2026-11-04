@@ -35,3 +35,8 @@ export function researchVersion(state: AppDinner): string {
     )
     .digest("hex");
 }
+
+/** Sibling website discoveries do not invalidate unrelated booking jobs; each job also binds its own source hint. */
+export function bookingResearchVersion(state: AppDinner): string {
+  return researchVersion({...state,dinner:{...state.dinner,venues:state.dinner.venues.map(venue => ({...venue,officialWebsiteUrl:undefined}))}});
+}

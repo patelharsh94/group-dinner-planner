@@ -1,3 +1,4 @@
+import { BookingActions } from "./BookingActions";
 import type {
   DinnerView,
   MiniAppActionName,
@@ -118,6 +119,7 @@ export function GroupChoice({
           </Button>
         </div>
       )}
+      {active && agreement.agreed && <BookingActions option={option} prominent />}
       {agreement.agreed && (
         <Button
           variant="secondary"

@@ -283,7 +283,7 @@ export function ReservationPanel({
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    Open restaurant or booking page
+                    {review.linkKind === "reserve" ? "Reserve on booking site" : review.linkKind === "website" ? "Visit website" : review.linkKind === "listing" ? "View listing" : "Open restaurant page"}
                   </a>
                 )}
                 {review.phone && (

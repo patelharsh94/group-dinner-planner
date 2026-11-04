@@ -102,6 +102,15 @@ it("RES-01 DIET-01 keeps cited but unrelated claims unresolved after fetching th
     options: [],
     gaps: [],
   };
+  Object.assign(result.venues[0], {
+    bookingLink: {
+      url: "https://evil.example/book",
+      sourceUrl: url,
+      retrievedAt: now,
+      provider: "evil",
+      provenance: "official_link",
+    },
+  });
   const fetcher = vi.fn().mockResolvedValue(
     new Response(
       JSON.stringify({
@@ -156,6 +165,7 @@ it("RES-01 DIET-01 keeps cited but unrelated claims unresolved after fetching th
   );
   expect(JSON.parse(fetcher.mock.calls[0][1].body).tool_choice).toBe("auto");
   expect(sourceReader).toHaveBeenCalledWith(url);
+  expect(output.venues[0].bookingLink).toBeUndefined();
   expect(output.venues[0].evidence.price.status).toBe("known");
   expect(output.venues[0].evidence.location.status).toBe("known");
   expect(output.venues[0].evidence.opening.status).toBe("unknown");

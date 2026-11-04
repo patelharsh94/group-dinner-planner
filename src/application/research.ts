@@ -44,6 +44,15 @@ export const VerificationIssueSchema = z
     count: z.number().int().positive(),
   })
   .strict();
+export const ResearchPhaseOutcomeSchema = z.object({
+  phase: z.enum(["booking_link", "selected_verification", "discovery", "ranking", "retrieval", "extraction", "targeted_search", "verification"]),
+  outcome: z.enum(["complete", "partial", "unavailable"]),
+  code: z.enum(["timeout", "invalid_response", "source_unavailable", "absent", "identity_unmatched"]).optional(),
+  updatedAt: z.iso.datetime({ offset: true }),
+  durationMs: z.number().int().nonnegative().optional(),
+  model: z.string().max(100).regex(/^[A-Za-z0-9_.:/-]+$/).optional(),
+}).strict();
+export type ResearchPhaseOutcome = z.infer<typeof ResearchPhaseOutcomeSchema>;
 export const ResearchAttemptSchema = z
   .object({
     id: z.string().min(1).max(128),
@@ -74,6 +83,7 @@ export const ResearchAttemptSchema = z
     retryAfterSeconds: z.number().int().min(0).max(86400).optional(),
     durationMs: z.number().int().nonnegative().optional(),
     verificationIssues: z.array(VerificationIssueSchema).max(7).optional(),
+    phases: z.array(ResearchPhaseOutcomeSchema).max(10).optional(),
     discovery: z
       .object({
         provider: z.literal("yelp"),

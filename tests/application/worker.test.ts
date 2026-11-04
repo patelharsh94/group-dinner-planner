@@ -414,3 +414,55 @@ it("RES-03 gives each participant an early preference slot before taking second 
     "Korean",
   ]);
 });
+
+import { setVenues, proposeOptions } from '../../src/domain/index.js';
+import { directoryVenue, directoryOptions } from '../../src/application/directory-research.js';
+import { bookingResearchVersion } from '../../src/application/research-version.js';
+function bookingState() {
+  const state = dinnerState();
+  const {context} = researchContext(state, now);
+  state.dinner = setVenues(state.dinner, '1001', ['one','two','three'].map((id,index)=>({...directoryVenue(id,index,context,now), directoryBusinessId:undefined, officialWebsiteUrl:`https://${id}.example`})),now);
+  state.dinner = proposeOptions(state.dinner,'1001',directoryOptions(['one','two','three'],context),now);
+  return state;
+}
+it('LINK03 durably schedules all three option targets with stable dedupe across retries',async()=>{
+  const state=bookingState();
+  const coordinator = new Coordinator({MODEL_API_KEY:'fixture'} as any,undefined,()=>now);
+  const queue=vi.fn();
+  const tx={queue};
+  const record={id:'d1',organizerId:'1001',revision:1,state};
+  await coordinator.scheduleBookingEnrichment(tx as any,record as any);
+  await coordinator.scheduleBookingEnrichment(tx as any,record as any);
+  expect(queue).toHaveBeenCalledTimes(6);
+  expect(queue.mock.calls.slice(0,3).map(([job])=>job.payload.venueId)).toEqual(['directory:one','directory:two','directory:three']);
+  expect(queue.mock.calls[0][0].dedupeKey).toBe(queue.mock.calls[3][0].dedupeKey);
+});
+it('LINK03 commits sibling links despite revision changes, suppresses changed versions, and retains typed failures',async()=>{
+  const state=bookingState();
+  let record:any={id:'d1',organizerId:'1001',revision:1,state};
+  const tx:any={getDinner:async()=>record,saveDinner:async(next:any)=>{record={...next,revision:record.revision+1};return record;}};
+  const store:any={readDinner:async()=>structuredClone(record),processWork:async(_id:any,_worker:any,fn:any)=>fn(tx),markSuppressed:vi.fn()};
+  const coordinator=new Coordinator({MODEL_API_KEY:'fixture'} as any,undefined,()=>now);
+  let release!:()=>void;
+  const wait=new Promise<void>(r=>release=r);
+  const muse:any={enrichBookingLink:vi.fn(async(venue:any)=>{
+    if(venue.id==='directory:one')await wait;
+    if(venue.id==='directory:three')throw Object.assign(new Error('private source text'),{name:'TimeoutError'});
+    return {outcome:'complete',bookingLink:{url:`${venue.officialWebsiteUrl}/reserve`,sourceUrl:venue.officialWebsiteUrl,provider:'Restaurant',provenance:'official_link',retrievedAt:now}};
+  })};
+  const worker=new Worker(store,coordinator,{} as any,muse);
+  const make=(id:string)=>({id,kind:'booking_enrichment',payload:{dinnerId:'d1',userId:'1001',revision:1,version:state.dinner.activeVersion,researchVersion:bookingResearchVersion(state),venueId:`directory:${id}`,websiteHint:`https://${id}.example`}} as any);
+  const first=worker.runJob(make('one'));
+  await worker.runJob(make('two'));
+  release();await first;
+  expect(record.state.dinner.venues.filter((v:any)=>v.bookingLink)).toHaveLength(2);
+  await worker.runJob(make('three'));
+  expect(record.state.bookingResearch['directory:three']).toMatchObject({outcome:'unavailable',code:'timeout'});
+  expect(JSON.stringify(record.state.bookingResearch)).not.toContain('private source text');
+  const wrongSource=make('three');wrongSource.payload.websiteHint='https://changed.example';
+  await worker.runJob(wrongSource);
+  expect(store.markSuppressed).toHaveBeenCalled();
+  const stale=make('three');stale.payload.version=999;
+  await worker.runJob(stale);
+  expect(store.markSuppressed).toHaveBeenCalled();
+});

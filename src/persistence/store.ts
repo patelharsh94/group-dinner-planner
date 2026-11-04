@@ -586,6 +586,17 @@ export class PgStore {
     );
     return r.rows[0] ?? null;
   }
+  /** Serialize only enrichment claims across processes; two live leases globally. */
+  async claimBookingEnrichment(worker: string): Promise<ClaimedWork | null> {
+    return this.transaction(async (tx) => {
+      await tx.client.query("SELECT pg_advisory_xact_lock(72846103)");
+      const result = await tx.client.query(
+        "UPDATE outbox SET status='sending',lease_owner=$1,lease_until=now()+interval '60 seconds',attempts=attempts+1 WHERE id=(SELECT id FROM outbox WHERE kind='booking_enrichment' AND status='pending' AND available_at<=now() AND attempts<5 AND (SELECT count(*) FROM outbox WHERE kind='booking_enrichment' AND status='sending' AND lease_until>now())<2 ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,payload,attempts,kind",
+        [worker],
+      );
+      return result.rows[0] ?? null;
+    });
+  }
   /** Commit a local research result and its state/outbox effects exactly once. */
   async processWork(
     id: string,

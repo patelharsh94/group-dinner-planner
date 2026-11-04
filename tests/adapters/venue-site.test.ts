@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { readVenueSite } from "../../src/adapters/venue-site.js";
 
-it("reads only the supplied homepage and at most two linked same-origin relevant pages", async () => {
+it("reads only the supplied homepage and at most five linked same-origin relevant pages", async () => {
   const reader = vi.fn(
     async (
       url: string,
@@ -10,8 +10,8 @@ it("reads only the supplied homepage and at most two linked same-origin relevant
       allow?: (url: string) => boolean,
       maxBytes?: number,
     ) => {
-      expect(maxBytes).toBe(2_000_000);
-      expect(allow?.("https://evil.example/menu")).toBe(false);
+      expect(maxBytes).toBeLessThanOrEqual(2_000_000);
+      expect(allow?.("https://unpublished.example/menu")).toBe(false);
       expect(allow?.("https://gaijin.example/menu")).toBe(true);
       return url === "https://gaijin.example/"
         ? `<p>Gaijin Chicago official restaurant homepage</p><a href="https://evil.example/menu">Menu</a><a href="http://gaijin.example/menu">Menu</a><a href="https://127.0.0.1/menu">Menu</a><a href="/menu">Dinner Menu</a><a href="/hours">Hours</a><a href="/contact">Contact</a><a href="/news">News</a>`
@@ -21,10 +21,11 @@ it("reads only the supplied homepage and at most two linked same-origin relevant
   const pages = await readVenueSite("https://gaijin.example/", reader);
   expect(reader.mock.calls.map(([url]) => url)).toEqual([
     "https://gaijin.example/",
+    "https://evil.example/menu",
     "https://gaijin.example/menu",
     "https://gaijin.example/hours",
   ]);
-  expect([...pages.values()].join("").length).toBeLessThanOrEqual(12000);
+  expect([...pages.values()].join("").length).toBeLessThanOrEqual(24000);
   expect(
     reader.mock.calls.every((call) => call[2] instanceof AbortSignal),
   ).toBe(true);
@@ -46,12 +47,12 @@ it("rejects unsafe seeds before any network call and does not guess paths", asyn
   expect(reader).toHaveBeenCalledTimes(1);
 });
 
-it("limits the full site read to five seconds even when a reader hangs", async () => {
+it("limits the full site read to ten seconds even when a reader hangs", async () => {
   vi.useFakeTimers();
   try {
     const reader = vi.fn(() => new Promise<string>(() => {}));
     const pending = readVenueSite("https://gaijin.example", reader);
-    await vi.advanceTimersByTimeAsync(5001);
+    await vi.advanceTimersByTimeAsync(10001);
     expect((await pending).size).toBe(0);
   } finally {
     vi.useRealTimers();

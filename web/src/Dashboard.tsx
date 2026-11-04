@@ -1,3 +1,4 @@
+import { BookingActions } from "./BookingActions";
 import { planCheckMessage } from "./plan-checks";
 import { GroupChoice, VerificationStatus } from "./GroupChoice";
 import { ReservationPanel } from "./ReservationPanel";
@@ -655,6 +656,7 @@ export function Dashboard({
                           Choose this option instead
                         </Button>
                       )}
+                    {canParticipate && d.own.consent && d.status !== "cancelled" && <BookingActions option={option} prominent={index === 0 && d.status === "agreed"} />}
                     {index === 0 && d.status === "agreed" && (
                       <div className="plan-actions">
                         <Button
@@ -666,17 +668,7 @@ export function Dashboard({
                           <Icon name="calendar" size={18} />
                           Add to my calendar
                         </Button>
-                        {option.reservationUrl && (
-                          <a
-                            className="button button-secondary full"
-                            href={option.reservationUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            View reservation handoff{" "}
-                            <Icon name="arrow" size={16} />
-                          </a>
-                        )}
+
                       </div>
                     )}
                   </article>

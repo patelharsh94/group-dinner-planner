@@ -250,18 +250,15 @@ export async function project(
           "",
       )
     : undefined;
-  if (
-    reservation?.review &&
-    selectedBusiness &&
-    ["handoff_required", "action_needed"].includes(reservation.review.status)
-  ) {
+  if (reservation?.review && ["handoff_required", "action_needed"].includes(reservation.review.status)) {
+    const venue = d.venues.find(v => v.id === selected?.venueId);
+    const bookingUrl = venue?.bookingLink?.url ?? venue?.officialWebsiteUrl ?? selectedBusiness?.url;
     reservation.review = {
       ...reservation.review,
-      bookingUrl: selectedBusiness.url,
-      phone: selectedBusiness.phone,
-      searchUrl: undefined,
-      message:
-        "Open the current restaurant listing to check its booking link or contact the restaurant for this agreed time and party size.",
+      bookingUrl,
+      linkKind: venue?.bookingLink ? "reserve" : venue?.officialWebsiteUrl ? "website" : selectedBusiness ? "listing" : undefined,
+      phone: selectedBusiness?.phone ?? (venue?.evidence.reservation.status === "known" ? venue.evidence.reservation.phone : undefined),
+      ...(bookingUrl ? { searchUrl: undefined } : {}),
     };
   }
   const research = full ? await tx.getLatestResearchAttempt(record.id) : null;
@@ -559,7 +556,11 @@ export async function project(
             end: option.end,
             pricePerPerson: option.pricePerPerson,
             currency: d.setup.currency,
-            reservationUrl: venue?.evidence.reservation.url ?? "",
+            ...(venue?.bookingLink ? { bookingLink: venue.bookingLink } : {}),
+            ...(s.bookingResearch?.[option.venueId]?.version === d.activeVersion ? {bookingResearch: s.bookingResearch[option.venueId]} : {}),
+            ...(venue?.officialWebsiteUrl ? { officialWebsiteUrl: venue.officialWebsiteUrl } : {}),
+            ...(venue?.evidence.reservation.status === "known" && venue.evidence.reservation.phone ? {reservationPhone: venue.evidence.reservation.phone} : {}),
+            reservationUrl: venue?.bookingLink?.url ?? "",
             reservationState: venue?.evidence.reservation.state ?? "unknown",
             ownChecks: { status: feasibility.status, reasons },
             sources: venue

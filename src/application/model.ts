@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ResearchPhaseOutcomeSchema } from "./research.js";
 import { CoordinationSchema } from "./coordination.js";
 import { DateTime } from "luxon";
 import {
@@ -17,6 +18,7 @@ export const DinnerTitleSchema = z
   .optional();
 export const AppDinnerSchema = z.object({
   title: DinnerTitleSchema,
+  bookingResearch: z.record(z.string(), ResearchPhaseOutcomeSchema.extend({version:z.number().int(), venueId:z.string()})).optional(),
   coordination: CoordinationSchema.optional(),
   dinner: DinnerSchema,
   roster: z.array(z.object({ name: z.string(), id: z.string() })),

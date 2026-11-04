@@ -160,7 +160,7 @@ it("discards unrelated website identities even when the provider returns evidenc
   expect(actual.options).toEqual([]);
 });
 
-it("preserves fetched restaurant identity when extraction times out after twenty seconds", async () => {
+it("preserves fetched restaurant identity when extraction times out after forty-five seconds", async () => {
   vi.useFakeTimers();
   try {
     const fetcher = vi.fn(() => new Promise<Response>(() => {}));
@@ -170,7 +170,7 @@ it("preserves fetched restaurant identity when extraction times out after twenty
       fetcher,
       sourceReader,
     }).research(context, now);
-    await vi.advanceTimersByTimeAsync(20001);
+    await vi.advanceTimersByTimeAsync(45001);
     const actual = await pending;
     expect(actual.focusedSite).toBe(true);
     expect(actual.venues[0].name).toBe("Gaijin");
@@ -348,7 +348,7 @@ it("preserves verified site facts when a successful extraction leaves identity a
   expect(actual.venues[0].evidence.reservation.phone).toBeUndefined();
   expect(actual.venues[0].evidence.opening.status).toBe("unknown");
   const body = JSON.parse(fetcher.mock.calls[0][1].body);
-  expect(body.max_output_tokens).toBe(2500);
+  expect(body.max_output_tokens).toBe(3500);
   expect(body.input).not.toMatch(
     /PRIVATE_ORIGIN|PRIVATE_PREFERENCE|intendedAttendees|budget/,
   );
@@ -504,4 +504,113 @@ it("does not borrow a different branch's price or dietary suitability", async ()
   );
   expect(actual.venues[0].evidence.price.status).toBe("unknown");
   expect(actual.venues[0].evidence.dietary.vegan.status).toBe("unknown");
+});
+it("accepts separately quoted facts and footer identity on a single branch page", async () => {
+  const answer = result();
+  answer.venues[0].evidence.price.excerpt = "Dinner USD 40 per person.";
+  const actual = await new MuseClient({
+    apiKey: "fixture",
+    fetcher: vi.fn().mockResolvedValue(response(answer)),
+    sourceReader: vi
+      .fn()
+      .mockResolvedValue(
+        "<h1>Gaijin</h1><p>Dinner USD 40 per person.</p><footer>950 W Lake St Chicago</footer>",
+      ),
+  }).research(context, now);
+  expect(actual.venues[0].evidence.price.status).toBe("known");
+  expect(actual.phases?.map((p) => p.phase)).toEqual([
+    "retrieval",
+    "extraction",
+    "verification",
+  ]);
+});
+it("performs one targeted missing-fact search and preserves existing independent facts", async () => {
+  const slot = {
+    start: "2026-11-05T19:00:00-06:00",
+    end: "2026-11-05T20:30:00-06:00",
+  };
+  const answer = result();
+  const hours = "Gaijin 950 W Lake St Chicago. Thursday 5 PM - 10 PM.";
+  const hoursUrl = "https://gaijin.example/hours";
+  const evidence = {
+    ...answer.venues[0].evidence,
+    opening: {
+      status: "known",
+      url: hoursUrl,
+      retrievedAt: now,
+      excerpt: hours,
+      intervals: [slot],
+    },
+  };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(response(answer))
+    .mockResolvedValueOnce(response({ evidence }, [hoursUrl]));
+  const actual = await new MuseClient({
+    apiKey: "fixture",
+    fetcher,
+    sourceReader: vi.fn(async (u) => (u === url ? text : hours)),
+  }).research({ ...context, slots: [slot] }, now);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(JSON.parse(fetcher.mock.calls[1][1].body).instructions).toContain(
+    "at most three focused web queries",
+  );
+  expect(actual.venues[0].evidence.opening.status).toBe("known");
+  expect(actual.venues[0].evidence.price.status).toBe("known");
+  expect(
+    actual.phases?.find((p) => p.phase === "targeted_search")?.outcome,
+  ).toBe("complete");
+});
+it("preserves contradictory facts when targeted search finds a known assertion", async () => {
+  const slot = {
+    start: "2026-11-05T19:00:00-06:00",
+    end: "2026-11-05T20:30:00-06:00",
+  };
+  const answer = result();
+  Object.assign(answer.venues[0].evidence.opening, {
+    status: "contradictory",
+    excerpt: text,
+  });
+  const evidence = {
+    ...answer.venues[0].evidence,
+    opening: {
+      status: "known",
+      url,
+      retrievedAt: now,
+      excerpt: text,
+      intervals: [slot],
+    },
+  };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(response(answer))
+    .mockResolvedValueOnce(response({ evidence }, [url]));
+  const actual = await new MuseClient({
+    apiKey: "fixture",
+    fetcher,
+    sourceReader: vi.fn().mockResolvedValue(text),
+  }).research({ ...context, slots: [slot] }, now);
+  expect(actual.venues[0].evidence.opening.status).toBe("contradictory");
+});
+it("extracts adapter-owned booking link despite blocked provider and reports partial retrieval", async () => {
+  const booking = "https://resy.com/cities/chicago/gaijin";
+  const sourceReader = vi.fn(async (u) => {
+    if (u !== url) throw new Error("Unsupported source");
+    return `<p>${text}</p><a href="${booking}">Reserve a table</a>`;
+  });
+  const actual = await new MuseClient({
+    apiKey: "fixture",
+    fetcher: vi.fn().mockResolvedValue(response(result())),
+    sourceReader,
+  }).research(context, now);
+  expect(actual.venues[0].bookingLink).toMatchObject({
+    url: booking,
+    sourceUrl: url,
+    provenance: "official_link",
+  });
+  expect(actual.phases?.find((p) => p.phase === "retrieval")).toMatchObject({
+    outcome: "partial",
+    code: "source_unavailable",
+  });
+  expect(actual.venues[0].evidence.reservation.status).toBe("unknown");
 });

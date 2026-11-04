@@ -190,6 +190,7 @@ export function ResearchStatus({ dinner }: { dinner: DinnerView }) {
                   </dd>
                 </div>
               ) : null}
+              {details.phases?.length ? <div><dt>Research phases</dt><dd><ul>{details.phases.map((phase, i) => <li key={i}>{phase.phase.replaceAll("_", " ")}: {phase.outcome}{phase.code ? ` (${phase.code.replaceAll("_", " ")})` : ""}{phase.durationMs !== undefined ? ` · ${(phase.durationMs / 1000).toFixed(1)}s` : ""}{phase.model ? ` · ${phase.model}` : ""}</li>)}</ul></dd></div> : null}
               {details.counts && (
                 <div>
                   <dt>Research checks</dt>

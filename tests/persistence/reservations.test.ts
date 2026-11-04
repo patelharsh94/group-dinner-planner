@@ -72,6 +72,7 @@ function fixture(id: string): AppDinner {
     venues: [
       {
         id: "v",
+        bookingLink: {url:"https://venue.example/reservations",sourceUrl:"https://venue.example",retrievedAt:now,provider:"Restaurant",provenance:"official_link"},
         name: "Venue",
         address: "1 Main",
         city: "Chicago",
@@ -151,6 +152,16 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       store.transaction((tx) =>
         tx.createDinner({ id, organizerId: "a", state: fixture(id) }),
       );
+    it("LINK02 never converts generic reservation evidence into a booking destination", async () => {
+      const state = fixture("evidence-is-not-booking");
+      delete state.dinner.venues[0].bookingLink;
+      state.dinner.venues[0].evidence.reservation.url = "https://venue.example/menu";
+      const record = await store.transaction(tx => tx.createDinner({id:"evidence-is-not-booking",organizerId:"a",state}));
+      const service = new ReservationService(store,new OpenTableProvider(),key,{},()=>now);
+      const review = await store.transaction(tx => service.review(tx,record,"a",{version:1}));
+      expect(review.bookingUrl).toBeUndefined();
+      expect(review.status).toBe("handoff_required");
+    });
     it("supports verified handoff and honest organizer reports; blocks duplicate across plan changes", async () => {
       const record = await create("manual"),
         service = new ReservationService(

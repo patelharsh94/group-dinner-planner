@@ -1,7 +1,7 @@
 import { getDirectoryBusinesses } from "../persistence/directory.js";
 import { ensureCoordination } from "./coordination.js";
 import { researchGuidance, type ResearchCode } from "./research.js";
-import { researchVersion } from "./research-version.js";
+import { bookingResearchVersion, researchVersion } from "./research-version.js";
 import type { TelegramButton } from "../adapters/telegram.js";
 import { randomBytes } from "node:crypto";
 import { DateTime } from "luxon";
@@ -1504,12 +1504,27 @@ export class Coordinator {
       { researchVersion: researchVersion(s) },
     );
   }
+  async scheduleBookingEnrichment(tx: DinnerTx, record: DinnerRecord<AppDinner>): Promise<void> {
+    if (!this.config.MODEL_API_KEY || record.endedAt || record.state.dinner.status === "cancelled" || !canPlan(record.state)) return;
+    const d = record.state.dinner;
+    const proposal = d.proposals.find(p => p.version === d.activeVersion);
+    if (!proposal) return;
+    for (const option of proposal.options.slice(0, 3)) {
+      const venue = d.venues.find(v => v.id === option.venueId);
+      if (!venue || (venue.bookingLink && Date.parse(this.now()) - Date.parse(venue.bookingLink.retrievedAt) < 86400000)) continue;
+      const fingerprint = bookingResearchVersion(record.state);
+      await this.job(tx, `booking:${proposal.version}:${venue.id}:${venue.officialWebsiteUrl ?? ""}:${fingerprint}`, "booking_enrichment", record.id, d.organizerId, record.revision, {
+        researchVersion: fingerprint, version: proposal.version, venueId: venue.id, websiteHint: venue.officialWebsiteUrl ?? "",
+      });
+    }
+  }
   async scheduleVerification(
     tx: DinnerTx,
     record: DinnerRecord<AppDinner>,
     eventId: string,
     pass: number,
   ): Promise<void> {
+    await this.scheduleBookingEnrichment(tx, record);
     if (
       !this.config.MODEL_API_KEY ||
       record.endedAt ||
