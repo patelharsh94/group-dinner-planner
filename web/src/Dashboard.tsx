@@ -4,7 +4,7 @@ import { ReservationPanel } from "./ReservationPanel";
 import { dinnerName } from "./dinners";
 import { AnswersPreview } from "./AnswersPreview";
 import { ResearchStatus } from "./ResearchStatus";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   DinnerView,
   MiniAppActionName,
@@ -51,6 +51,8 @@ export function Dashboard({
   const owner = d.role === "organizer",
     pending = d.role === "pending",
     withdrawn = d.role === "withdrawn" || !d.own.consent;
+  const [website, setWebsite] = useState("");
+  useEffect(() => setWebsite(""), [d.activeVersion]);
   const [change, setChange] = useState(false),
     [reason, setReason] = useState("");
   const [staff, setStaff] = useState(false),
@@ -177,30 +179,57 @@ export function Dashboard({
           >
             <span className="eyebrow">A question for you</span>
             <h2>{d.organizerQuestion.message}</h2>
-            <div className="plan-actions">
-              {d.organizerQuestion.actions.map((action) => (
-                <Button
-                  key={action}
-                  busy={busy}
-                  onClick={() => {
-                    if (action === "edit_details") onSettings();
-                    else if (action === "edit_answers") onEdit();
-                    else if (action === "reservation")
-                      void onAction("reviewReservation", {
-                        version: d.activeVersion,
-                      });
-                    else void onAction("research");
-                  }}
-                >
-                  {action === "edit_details"
-                    ? "Edit dinner details"
-                    : action === "edit_answers"
-                      ? "Edit my answers"
-                      : action === "reservation"
-                        ? "Review booking"
-                        : "Try research again"}
+            {d.organizerQuestion.actions.includes("provide_website") && (
+              <form
+                className="form-stack"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void onAction("setVenueWebsite", {
+                    version: d.activeVersion,
+                    url: website.trim(),
+                  });
+                }}
+              >
+                <Field label="Official restaurant website or menu">
+                  <input
+                    required
+                    type="url"
+                    placeholder="https://restaurant.example/menu"
+                    value={website}
+                    onChange={(event) => setWebsite(event.target.value)}
+                  />
+                </Field>
+                <Button type="submit" busy={busy} disabled={!website.trim()}>
+                  Read this website
                 </Button>
-              ))}
+              </form>
+            )}
+            <div className="plan-actions">
+              {d.organizerQuestion.actions
+                .filter((action) => action !== "provide_website")
+                .map((action) => (
+                  <Button
+                    key={action}
+                    busy={busy}
+                    onClick={() => {
+                      if (action === "edit_details") onSettings();
+                      else if (action === "edit_answers") onEdit();
+                      else if (action === "reservation")
+                        void onAction("reviewReservation", {
+                          version: d.activeVersion,
+                        });
+                      else void onAction("research");
+                    }}
+                  >
+                    {action === "edit_details"
+                      ? "Edit dinner details"
+                      : action === "edit_answers"
+                        ? "Edit my answers"
+                        : action === "reservation"
+                          ? "Review booking"
+                          : "Try research again"}
+                  </Button>
+                ))}
             </div>
           </section>
         )}

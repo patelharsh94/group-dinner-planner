@@ -410,5 +410,55 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         before.state.dinner.proposals.at(-1)!.options,
       );
     });
+    it("accepts an organizer website only for the current selected version", async () => {
+      const { coordinator, service } = await publish("site-input");
+      const before = (await store.readDinner<AppDinner>("site-input"))!;
+      const version = before.state.dinner.activeVersion!;
+      await expect(
+        service.mutate(
+          { id: "1002", name: "Guest" },
+          {
+            requestId: "site-guest",
+            action: "setVenueWebsite",
+            dinnerId: "site-input",
+            payload: { version, url: "https://restaurant.example/menu" },
+          },
+        ),
+      ).rejects.toThrow();
+      await expect(
+        service.mutate(
+          { id: "1001", name: "Owner" },
+          {
+            requestId: "site-stale",
+            action: "setVenueWebsite",
+            dinnerId: "site-input",
+            payload: {
+              version: version + 1,
+              url: "https://restaurant.example/menu",
+            },
+          },
+        ),
+      ).rejects.toThrow();
+      await service.mutate(
+        { id: "1001", name: "Owner" },
+        {
+          requestId: "site-owner",
+          action: "setVenueWebsite",
+          dinnerId: "site-input",
+          payload: { version, url: "https://restaurant.example/menu" },
+        },
+      );
+      const after = (await store.readDinner<AppDinner>("site-input"))!;
+      expect(after.state.dinner.venues[0].officialWebsiteUrl).toBe(
+        "https://restaurant.example/menu",
+      );
+      expect(after.state.dinner.activeVersion).toBe(version);
+      expect(after.state.dinner.confirmations).toEqual(
+        before.state.dinner.confirmations,
+      );
+      expect(researchVersion(after.state)).not.toBe(
+        researchVersion(before.state),
+      );
+    });
   },
 );

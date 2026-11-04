@@ -185,6 +185,7 @@ const evidenceBase = {
 };
 export const ClaimSchema = z.object(evidenceBase);
 export const VenueSchema = z.object({
+  officialWebsiteUrl: PublicUrlSchema.optional(),
   directoryBusinessId: z
     .string()
     .regex(/^[A-Za-z0-9_-]{1,200}$/)

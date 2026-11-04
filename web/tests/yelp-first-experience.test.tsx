@@ -168,3 +168,27 @@ it("does not call an unreferenced booked outcome confirmed or allow a duplicate"
     screen.queryByRole("button", { name: "Book this restaurant" }),
   ).toBeNull();
 });
+
+it("lets the organizer supply a website for the current selected plan", () => {
+  const onAction = vi.fn().mockResolvedValue(true);
+  const dinner = dinnerFixture({
+    activeVersion: 1,
+    options: [option as any],
+    organizerQuestion: {
+      id: "site",
+      kind: "research_connection",
+      message: "Which official website should I read?",
+      actions: ["provide_website"] as any,
+    },
+  });
+  render(<Dashboard {...props} onAction={onAction} dinner={dinner} />);
+  fireEvent.change(
+    screen.getByLabelText("Official restaurant website or menu"),
+    { target: { value: "https://restaurant.example/menu" } },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Read this website" }));
+  expect(onAction).toHaveBeenCalledWith("setVenueWebsite", {
+    version: 1,
+    url: "https://restaurant.example/menu",
+  });
+});

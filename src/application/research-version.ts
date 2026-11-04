@@ -23,6 +23,9 @@ export function researchVersion(state: AppDinner): string {
           staffReports: d.staffReports,
           disputes: d.disputes,
           activeVersion: d.activeVersion,
+          websiteHints: d.venues
+            .filter((v) => v.officialWebsiteUrl)
+            .map((v) => ({ id: v.id, url: v.officialWebsiteUrl })),
           status: d.status,
           consent: Object.fromEntries(
             Object.entries(state.consents).map(([id, c]) => [id, c.active]),

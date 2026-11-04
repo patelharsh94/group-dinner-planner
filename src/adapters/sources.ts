@@ -36,6 +36,7 @@ export async function readPublicSource(
   redirects = 0,
   signal: AbortSignal = AbortSignal.timeout(15000),
   allowUrl: (url: string) => boolean = () => true,
+  maxBytes = 512000,
 ): Promise<string> {
   if (!allowUrl(input)) throw new Error("Excluded source domain");
   const url = new URL(PublicUrlSchema.parse(input));
@@ -91,6 +92,7 @@ export async function readPublicSource(
             redirects + 1,
             signal,
             allowUrl,
+            maxBytes,
           ).then(resolve, reject);
           return;
         }
@@ -108,7 +110,7 @@ export async function readPublicSource(
         response.setEncoding("utf8");
         response.on("data", (chunk: string) => {
           size += Buffer.byteLength(chunk);
-          if (size > 512000) {
+          if (size > Math.min(maxBytes, 2000000)) {
             req.destroy(new Error("Source too large"));
             return;
           }

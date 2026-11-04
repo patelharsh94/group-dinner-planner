@@ -64,3 +64,15 @@ it("RES-03 explains safe source-check failures only to the organizer", () => {
     screen.getByRole("region", { name: "Latest research" }).textContent,
   ).not.toContain("quoted text could not be matched");
 });
+
+it("keeps available choices prominent when a background check times out", () => {
+  const dinner = dinnerFixture({
+    research: { ...attempt, status: "failed", message: "Research timed out." },
+    options: [{ venueId: "v" } as any],
+  });
+  render(<ResearchStatus dinner={dinner} />);
+  expect(
+    screen.getByRole("heading", { name: "Your restaurant choices are saved" }),
+  ).toBeTruthy();
+  expect(screen.queryByText("Research timed out.")).toBeNull();
+});

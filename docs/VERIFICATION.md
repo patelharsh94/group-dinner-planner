@@ -79,3 +79,11 @@ Local verification: TypeScript passed; 121 core, 43 frontend and 60 real Postgre
 ## Staged Yelp shortlist and reservation controls
 
 The complete local runs passed 248 core tests, 51 web tests, 66 real Postgres scenarios and 26 Chromium/iPhone WebKit browser scenarios. Tests cover three selectable alternatives, expiry guards in MiniApp and Telegram, early agreement/selection racing ranking, separate focused verification, unknown prices, persistent cache expiry, provider binding, authorization before hold and reservation, ambiguous submission, and organizer-only question UI. Typechecks and production builds passed. No live reservations or fabricated production dinners were created. Automatic Yelp booking remains disabled until approved partner access is supplied. Yelp API content is confined to the TTL cache and transient display copies; durable proposals reference opaque business IDs.
+
+## Focused official-site verification
+
+TypeScript and production builds passed. The full run passed 268 core tests; all 53 web tests passed with one worker after three five-second test timeouts during a simultaneous browser run. All 26 Chromium/iPhone WebKit scenarios passed. The current-version organizer website mutation also passed in the 67-scenario real PostgreSQL run, including unauthorized/stale requests, confirmation preservation and research invalidation.
+
+A live public Gaijin check read the official site and used a tool-free extraction request: 18.9 seconds, one retained restaurant, one verified claim, three unresolved claims and zero source-fetch failures. This verifies identity retention and bounded targeted extraction, not prices, dietary accommodation or booking inventory. The earlier 512 KB ceiling rejected its 564 KB homepage; selected-site reads now allow at most 2 MB per page while retaining strict page/text/time bounds. No live dinner or reservation was changed.
+
+Independent review reproduced cross-branch phone/hours borrowing from shared chain pages. The fallback was reduced to independently verified identity only, and selected-site contextual claims require local target association; related excerpts cannot supply another branch's facts. Regression checks cover this ambiguity, timeout/invalid/incomplete extraction, excluded hosts, redirects, and private-context minimization.

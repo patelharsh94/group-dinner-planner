@@ -7,6 +7,7 @@ import {
   ConstraintSchema,
   DinnerSetupSchema,
   DomainError,
+  PublicUrlSchema,
   approveMember,
   confirmVersion,
   cancelDinner,
@@ -54,6 +55,7 @@ import { stableHash } from "./hash.js";
 import { formVersion, invitation, project, summary } from "./view.js";
 const uid = () => randomBytes(12).toString("hex");
 const actions = [
+  "setVenueWebsite",
   "respondCoordination",
   "reviewReservation",
   "bookReservation",
@@ -873,6 +875,36 @@ export class MiniAppService {
       schedule = false,
       activatedCalendar = false;
     switch (input.action) {
+      case "setVenueWebsite": {
+        requireOwner(s, user);
+        const value = z
+          .object({
+            version: z.number().int().positive(),
+            url: PublicUrlSchema,
+          })
+          .strict()
+          .parse(payload);
+        if (value.version !== s.dinner.activeVersion)
+          throw new MiniAppFault(
+            "STALE",
+            409,
+            "This plan changed. Open its current restaurant before sharing a website.",
+          );
+        const active = s.dinner.proposals.find(
+            (p) => p.version === s.dinner.activeVersion,
+          ),
+          choice = active?.options[active.selectedIndex];
+        const venue = s.dinner.venues.find((v) => v.id === choice?.venueId);
+        if (!venue)
+          throw new MiniAppFault(
+            "PLAN_REQUIRED",
+            409,
+            "Choose a restaurant first.",
+          );
+        venue.officialWebsiteUrl = value.url;
+        changed = true;
+        break;
+      }
       case "respondCoordination": {
         const p = z
           .object({
@@ -1344,6 +1376,8 @@ export class MiniAppService {
       }
     }
     if (changed) record = await this.coordinator.save(tx, record, s);
+    if (changed && input.action === "setVenueWebsite")
+      await this.coordinator.scheduleVerification(tx, record, event, 1);
     if (activatedCalendar)
       await this.coordinator.job(
         tx,

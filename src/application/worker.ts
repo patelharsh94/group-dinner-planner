@@ -406,6 +406,8 @@ export class Worker {
             context.targetVenue = {
               name: cached?.name ?? venue.name,
               address: cached?.address ?? venue.address,
+              websiteUrl: venue.officialWebsiteUrl,
+              menuUrl: cached?.menuUrl,
             };
           }
         }
@@ -481,6 +483,8 @@ export class Worker {
                     );
                 }
               if (checked && oldVenue) {
+                if (checked.officialWebsiteUrl)
+                  oldVenue.officialWebsiteUrl = checked.officialWebsiteUrl;
                 for (const key of ["dietary", "travel"] as const) {
                   const allowedKeys =
                     key === "dietary"
@@ -541,6 +545,7 @@ export class Worker {
                 o &&
                 evaluateFeasibility(s.dinner, o, this.coordinator.now())
                   .status !== "feasible" &&
+                !result.focusedSite &&
                 (job.pass ?? 1) < 2
               )
                 await this.coordinator.scheduleVerification(

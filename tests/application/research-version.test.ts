@@ -4,6 +4,7 @@ import type { AppDinner } from "../../src/application/model.js";
 it("UI-05 research binds planning changes and ignores reminder/delivery-only saves", () => {
   const state = {
     dinner: {
+      venues: [],
       setup: { area: "City" },
       members: [{ id: "1", required: true, remindersOptIn: false }],
       constraints: { "1": { availability: [] } },

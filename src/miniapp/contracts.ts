@@ -27,6 +27,7 @@ export interface CreateDinnerInput {
   consent: true;
 }
 export type MiniAppActionName =
+  | "setVenueWebsite"
   | "respondCoordination"
   | "reviewReservation"
   | "bookReservation"
@@ -145,7 +146,13 @@ export interface DinnerView extends DinnerSummary {
     id: string;
     kind: "availability" | "search_scope" | "research_connection" | "booking";
     message: string;
-    actions: ("research" | "edit_details" | "edit_answers" | "reservation")[];
+    actions: (
+      | "research"
+      | "edit_details"
+      | "edit_answers"
+      | "reservation"
+      | "provide_website"
+    )[];
   };
   setup: Pick<
     DinnerSetup,

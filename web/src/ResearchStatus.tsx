@@ -75,25 +75,29 @@ export function ResearchStatus({ dinner }: { dinner: DinnerView }) {
       <div>
         <span className="eyebrow">Latest research</span>
         <h2>
-          {details?.code === "NO_SUITABLE_OPTIONS"
-            ? "We couldn’t finish your shortlist"
-            : attempt.status === "needs_checks" && dinner.options.length
-              ? "Dinner options ready"
-              : titles[attempt.status]}
+          {attempt.status === "failed" && dinner.options.length
+            ? "Your restaurant choices are saved"
+            : details?.code === "NO_SUITABLE_OPTIONS"
+              ? "We couldn’t finish your shortlist"
+              : attempt.status === "needs_checks" && dinner.options.length
+                ? "Dinner options ready"
+                : titles[attempt.status]}
         </h2>
       </div>
       <p className="muted small">
-        {attempt.status === "needs_checks" && dinner.options.length
-          ? "You can choose an option and confirm if it works for you. Confirm any food or allergy accommodation with the restaurant before relying on it. A table is not reserved until the reservation is confirmed."
-          : attempt.status === "queued" || attempt.status === "running"
-            ? "We’re finding restaurants and checking the group’s dinner details. This page will update as we go."
-            : attempt.status === "failed"
-              ? "The organizer is reviewing the next step. Your saved answers are unchanged."
-              : attempt.status === "cancelled"
-                ? "Research has stopped. Your saved answers are unchanged."
-                : attempt.status === "superseded"
-                  ? "The group’s answers changed. The latest dinner details will be used for the next search."
-                  : "The latest research is ready to review."}
+        {attempt.status === "failed" && dinner.options.length
+          ? "The background check couldn’t finish. Your choices are still available; review any question for the organizer below."
+          : attempt.status === "needs_checks" && dinner.options.length
+            ? "You can choose an option and confirm if it works for you. Confirm any food or allergy accommodation with the restaurant before relying on it. A table is not reserved until the reservation is confirmed."
+            : attempt.status === "queued" || attempt.status === "running"
+              ? "We’re finding restaurants and checking the group’s dinner details. This page will update as we go."
+              : attempt.status === "failed"
+                ? "The organizer is reviewing the next step. Your saved answers are unchanged."
+                : attempt.status === "cancelled"
+                  ? "Research has stopped. Your saved answers are unchanged."
+                  : attempt.status === "superseded"
+                    ? "The group’s answers changed. The latest dinner details will be used for the next search."
+                    : "The latest research is ready to review."}
       </p>
       {(attempt.status === "queued" || attempt.status === "running") && (
         <p className="field-hint" role="status">

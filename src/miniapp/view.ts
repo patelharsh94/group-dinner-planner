@@ -373,6 +373,24 @@ export async function project(
           },
         }
       : {}),
+    ...(organizer(s, user) &&
+    !record.endedAt &&
+    selected &&
+    research?.stage === "done" &&
+    research.verificationIssues?.some((issue) =>
+      ["source_unavailable", "identity_unverified"].includes(issue.code),
+    ) &&
+    !work.rows[0].pending
+      ? {
+          organizerQuestion: {
+            id: `website:${d.activeVersion}`,
+            kind: "research_connection" as const,
+            message:
+              "I couldn’t read the restaurant’s website. Can you share its official website or a readable menu link?",
+            actions: ["provide_website" as const],
+          },
+        }
+      : {}),
     canConfirm,
     sharedAvailability: full
       ? d.members
