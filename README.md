@@ -1,67 +1,70 @@
 # Group Dinner Planner
 
-Dinner Planner is a Telegram dinner coordinator powered by Muse. An organizer delegates dinner planning, the bot gathers input from friends in private chats, and the organizer receives meaningful progress updates and decisions requiring their attention.
+A Telegram bot that plans group dinners (2–6 people). The organizer sets up one dinner. Each guest answers privately. The bot suggests restaurants and tracks agreement.
 
-## Status
+No account or install needed to try it.
 
-The Node.js/TypeScript service includes a React Telegram Mini App, migrations, Muse and Google adapters, tests, and Render/Railway configuration. Live provider verification, a real-group trial and submission remain gated on credentials, consenting participants and official event instructions. Tests use labeled synthetic data and never substitute fixtures into the live bot.
+## Try it live
 
-The normative contract is [SPEC.md](SPEC.md); architecture choices are in [DECISIONS.md](DECISIONS.md). Background briefs below are historical context.
+Open Telegram and start the bot:
 
-## First version
+**[t.me/FunPlannerBot](https://t.me/FunPlannerBot)**
 
-- Dinner for 2–6 people in one city.
-- Dinner-specific invitations and participant onboarding through a Telegram bot.
-- Private availability and preferences, two proposed plans, and revisions when constraints change.
-- Explicit confirmation of the same plan version by all required participants.
-- Organizer milestone updates, calendar export, and an accurate reservation handoff.
+Then:
 
-## Planning documents
+1. Send `/start` and tap **Open planner**.
+2. Fill in the city, dates, party size, and per-person budget.
+3. Share the invite link with your group. Each guest opens it, consents, and submits their own dates and food needs privately.
+4. Review the suggested options (up to two). Everyone confirms the same plan when ready.
 
-- [Product brief](group-dinner-product-brief.md): scope, user journey, behavior, demo and validation.
-- [Planning prompt](group-dinner-planning-prompt.md): reusable prompt for product and implementation planning.
-- [Telegram coordinator prompt](telegram-dinner-coordinator-prompt.md): draft runtime behavior and application enforcement boundaries.
-- [Superseded WhatsApp prompt reference](whatsapp-dinner-coordinator-prompt.md): redirect retained for historical links.
+After agreement, you get a calendar file and a reservation handoff. The bot never books tables for you.
 
-## Run locally
+Tips:
 
-Use Node 22.13 or newer and PostgreSQL 17 or newer.
+- The organizer approves each guest's Telegram name before their answers count.
+- Use **Request a change** if plans shift. Big changes clear old confirmations so everyone re-confirms the new version.
+- Commands: `/new` starts a dinner, `/help` opens the planner, `/privacy`, `/stop`, and `/delete` manage your data.
+
+## How it works
+
+- **Organizer:** creates the dinner, invites friends, picks between two researched options, sees milestone updates.
+- **Guests:** answer only for themselves in a private chat. Answers stay private unless they opt in to sharing.
+- **Agreement:** every required person must explicitly confirm the same plan version. Missing or conflicting info blocks agreement instead of guessing.
+- **Changes:** objections and schedule changes trigger a re-check and fresh confirmations.
+
+Details: [SPEC.md](SPEC.md). Design choices: [DECISIONS.md](DECISIONS.md).
+
+Background docs:
+
+- [Product brief](group-dinner-product-brief.md)
+- [Planning prompt](group-dinner-planning-prompt.md)
+- [Telegram coordinator prompt](telegram-dinner-coordinator-prompt.md)
+
+## Run it yourself
+
+You need Node 22.13+ and PostgreSQL 17+.
 
 ```sh
 npm ci
 cp .env.example .env
-# Fill in DATABASE_URL, Telegram token/username, public HTTPS URL, support contact,
-# webhook secret (24+ random URL-safe characters) and a 32-byte base64 encryption key.
-# Add MODEL_API_KEY for live extraction/research; Google credentials are optional.
+# Fill in DATABASE_URL, Telegram token/username, public HTTPS URL,
+# support contact, webhook secret, encryption key, and MODEL_API_KEY.
 npm run db:migrate
 npm run build:web
 npm run dev
 ```
 
-Local `.env` values load automatically; environment variables provided by hosting take precedence. The encryption key must remain stable across restarts. An HTTPS endpoint reachable by Telegram is needed for the webhook. Once deployed, `npm run telegram:register` registers the authenticated webhook and the **Open planner** menu button. The service does not register or replace webhooks on startup.
+Notes:
 
-See [integration setup and release gates](docs/INTEGRATIONS.md) for Google consent-screen publication, scopes, provider protocol references and Render/Railway deployment. The Docker image runs migrations before starting the app, so Render's separate Pre-Deploy Command can stay empty. Manual willingness works without Google; live restaurant research requires Muse access and usable public source evidence.
+- The encryption key must stay the same across restarts.
+- Telegram needs a public HTTPS URL for the webhook.
+- After deploy, run `npm run telegram:register`. This sets the webhook and adds the **Open planner** menu button. Startup does not do this for you.
+- For frontend work, run `npm run dev:web` alongside `npm run dev`. Vite proxies `/api` to port 3000.
+- Opening the app outside Telegram shows the bot link. There is no login bypass.
 
-## Private Telegram workflow
+Deployment, Google setup, and provider details: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
-1. Send `/start` or `/new`, then tap **Open planner**. Set the city, optional area, dates, party size (2–6) and per-person budget in one form. Timezone, currency and duration are visible editable settings owned by the organizer.
-2. Pick your own willing dates, apply your available hours with one editor, and choose no food requirements or enter yours. Saved time ranges have Edit and Remove controls. Optional advanced settings cover personal budget, travel and preferences. No willing dates are preselected.
-3. Share the dinner-specific invitation. Guests start the bot, open their private form, consent and submit once. The organizer approves their Telegram name; pending private responses stay out of planning until then.
-4. Review up to two researched options in the dashboard. The organizer can choose the alternative. Each required attendee explicitly confirms the current feasible version. Missing or contradictory firm evidence blocks agreement.
-5. Use **Request a change** and edit your response when needed. Material revisions clear confirmations. Two revised rounds per open disagreement are allowed before organizer escalation. Allergy accommodation requires the affected person's explicit staff confirmation.
-6. After agreement, download the calendar file and use the reservation handoff. The bot never books, writes calendars or changes existing reservations.
-
-The organizer can **Cancel dinner** in settings after reviewing a confirmation. This ends that dinner for everyone, stops planning and reminders, and allows a new dinner. Cancelled dinners remain read-only for seven days; existing reservations and downloaded calendar events need manual cleanup. **Stop coordination for me** remains a separate personal opt-out.
-
-Calendar free/busy is optional; connect and activate it under settings. Manual availability works throughout. Reminders require opt-in. Privacy, stop and deletion are available in the app and via `/privacy`, `/stop`, `/delete`. Existing commands and in-progress chat setup drafts continue to work. `/help` opens the planner.
-
-For frontend development, run `npm run dev:web` alongside `npm run dev`; Vite proxies `/api` to port 3000. The production build serves `/app/` and its APIs from the same Fastify process and HTTPS domain. Opening the app outside Telegram shows the bot link; there is no production authentication bypass. A public HTTPS URL, including the existing Render URL, is sufficient; a custom domain is optional.
-
-Your form answers are private by default. The sharing checkbox previews availability, food requirements, preferences, budget and travel starting point before sharing them with approved members. **Party answers** shows only opted-in responses; calendar busy times, private chats and staff conversations are excluded. Sharing can be disabled in settings even after dinner ends or is cancelled.
-
-**Latest research** distinguishes a queued search, a provider failure and options needing evidence checks. Organizers can expand **Research details** for a safe error code, stage, timestamp, HTTP status, retry guidance and support reference. Credentials belong in hosting configuration, never in the Mini App or chat. The live adapter uses Muse-supported `tool_choice: "auto"` and independently verifies that a live search actually completed.
-
-## Verify
+## Check your changes
 
 ```sh
 npm run typecheck
@@ -73,12 +76,16 @@ npm run test:browser
 npm audit
 ```
 
-The embedded command starts isolated real Postgres on localhost:55439, creates disposable test schemas, runs persistence and full-conversation acceptance tests, and stops it. Alternatively set `TEST_DATABASE_URL` to a dedicated disposable database and run `npm run test:db`. CI uses PostgreSQL 17. The database tests include the objection → alternative → schedule change → fresh unanimous confirmation story, rollback, duplicate updates, concurrent writes, deletion and an OAuth disconnect race.
+The embedded DB test starts its own Postgres, runs persistence and full-conversation tests, then stops it. Or point `TEST_DATABASE_URL` at a disposable database and run `npm run test:db`. CI uses PostgreSQL 17.
 
-`npm run test:live` performs read-only Telegram/Muse checks and exits 2 when credentials are absent. `npm run eval:muse -- --research` runs the versioned live evaluation set. See [the trial checklist](docs/TRIAL.md) for the actual group and demo. Neither a deterministic test nor configured credentials establish successful live verification.
+Live checks (`npm run test:live`) need real credentials and exit 2 without them. They are read-only. See [docs/VERIFICATION.md](docs/VERIFICATION.md) and [docs/TRIAL.md](docs/TRIAL.md).
 
-See [the verification record](docs/VERIFICATION.md) for executed checks and remaining release gates.
+Never commit API tokens, calendar credentials, or real participant data.
 
-Never commit API tokens, calendar credentials, private conversations or real participant data.
+## Limits
 
-Organizers can manage up to five active dinners at once (configurable with `MAX_ACTIVE_DINNERS_PER_ORGANIZER`, independently of service capacity). Add an optional name, switch through **Your dinners**, and rename ongoing plans in settings without resetting confirmations. Each dinner keeps separate participants, consent, answers, calendar connections and research. `/resume DINNER_ID` resumes one organizer role; `/stop` and `/delete` apply across all your dinners. Reminders remain limited to one per 24 hours per person across dinners.
+- One dinner: 2–6 people, one city.
+- One organizer: up to 5 active dinners at once (see `MAX_ACTIVE_DINNERS_PER_ORGANIZER`).
+- Reminders are opt-in, max one per person per 24 hours.
+- Cancelled dinners stay read-only for 7 days. Cleanup of existing reservations and downloaded calendar events is manual.
+- Calendar free/busy is optional. Manual availability always works.
