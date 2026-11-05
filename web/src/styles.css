@@ -1489,7 +1489,7 @@ input[type="checkbox"] {
   overflow-wrap: anywhere;
 }
 
-.restaurant-details { margin: 1rem 0; padding: .8rem; background: var(--surface-soft, #f7f7f5); border-radius: 12px; }
+.restaurant-details { margin: 1rem 0; padding: .8rem; background: var(--soft); color: var(--ink); border-radius: 12px; }
 .restaurant-details dl { margin: 0; display: grid; gap: .8rem; }
 .restaurant-details dt { font-weight: 650; margin-bottom: .2rem; }
 .restaurant-details dd { margin: 0; }

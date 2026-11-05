@@ -11,17 +11,17 @@ const brief: any = {
   booking: { status: "unknown", sourceUrls: [] },
   dietary: { status: "partial", sourceUrls: [], assessments: [{ requirement: "vegetarian", assessment: "promising", dishes: ["Mushroom okonomiyaki"], caveats: ["Ask about dashi"], sourceUrls: [] }] },
 };
-it("shows four restaurant categories and partial findings without approving firm food safety", () => {
+it("shows four compact restaurant categories without approving firm food safety", () => {
   render(<RestaurantDetails brief={brief} />);
-  for (const name of ["Address", "Posted hours", "Reservations", "Dietary options"]) expect(screen.getByText(name)).toBeTruthy();
+  for (const name of ["Address", "Hours", "Booking", "Dietary"]) expect(screen.getByText(name)).toBeTruthy();
   expect(screen.getByText("Tuesday: 5–10pm")).toBeTruthy();
   expect(screen.getByText(/Mushroom okonomiyaki/)).toBeTruthy();
   expect(screen.getByText(/Ask about dashi/)).toBeTruthy();
-  expect(screen.getByText(/Firm dietary needs and allergies still need/)).toBeTruthy();
+  expect(screen.getByText(/staff confirmation/)).toBeTruthy();
   expect(screen.queryByText(/Research failed/)).toBeNull();
 });
-it("keeps sourced summary informational when normalization is incomplete", () => {
+it("keeps the sourced summary collapsed until the organizer opens it", () => {
   render(<RestaurantDetails brief={{...brief, sourcedSummary:{text:"The menu lists vegetable dishes.",sourceUrls:["https://restaurant.example/menu"]}}} />);
+  expect(screen.getByText("What the sources say")).toBeTruthy();
   expect(screen.getByText("The menu lists vegetable dishes.")).toBeTruthy();
-  expect(screen.getByText(/Informational source summary/)).toBeTruthy();
 });
