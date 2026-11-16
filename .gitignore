@@ -11,3 +11,4 @@ coverage/
 .postgres/
 playwright-report/
 test-results/
+*.env
